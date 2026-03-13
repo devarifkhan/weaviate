@@ -265,6 +265,31 @@ func (s *Store) ShutdownBucket(ctx context.Context, bucketName string) error {
 	return nil
 }
 
+// DropBucket shuts down the named bucket and removes its data from disk.
+// If the bucket does not exist, it returns nil.
+func (s *Store) DropBucket(ctx context.Context, bucketName string) error {
+	s.closeLock.RLock()
+	defer s.closeLock.RUnlock()
+
+	s.bucketAccessLock.Lock()
+	bucket, ok := s.bucketsByName[bucketName]
+	if !ok {
+		s.bucketAccessLock.Unlock()
+		return nil
+	}
+	if err := bucket.Shutdown(ctx); err != nil {
+		s.bucketAccessLock.Unlock()
+		return errors.Wrapf(err, "shutdown bucket %q of store %q", bucketName, s.dir)
+	}
+	delete(s.bucketsByName, bucketName)
+	s.bucketAccessLock.Unlock()
+
+	if err := os.RemoveAll(s.bucketDir(bucketName)); err != nil {
+		return errors.Wrapf(err, "remove bucket %q data of store %q", bucketName, s.dir)
+	}
+	return nil
+}
+
 func (s *Store) WriteWALs() error {
 	s.closeLock.RLock()
 	defer s.closeLock.RUnlock()

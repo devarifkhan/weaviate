@@ -9,7 +9,7 @@
 //  CONTACT: hello@weaviate.io
 //
 
-package properties
+package alterschema
 
 import (
 	"context"
@@ -42,6 +42,7 @@ func TestProperties_SingleNode(t *testing.T) {
 	t.Run("delete property's index empty collection", testDeletePropertyIndexEmpty())
 	t.Run("delete property's index multi-tenant", testDeletePropertyIndexMultiTenant(compose))
 	t.Run("delete property's index", testDeletePropertyIndex(compose))
+	t.Run("drop vector index", testDropVectorIndex(compose))
 }
 
 func TestProperties_Cluster(t *testing.T) {
@@ -61,4 +62,5 @@ func TestProperties_Cluster(t *testing.T) {
 	t.Run("delete property's index empty collection", testDeletePropertyIndexEmpty())
 	t.Run("delete property's index multi-tenant", testDeletePropertyIndexMultiTenant(nil))
 	t.Run("delete property's index", testDeletePropertyIndex(nil))
+	t.Run("drop vector index", testDropVectorIndex(nil))
 }

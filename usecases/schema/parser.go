@@ -158,7 +158,7 @@ func (p *Parser) moduleConfig(moduleConfig map[string]any) (map[string]any, erro
 }
 
 func (p *Parser) parseVectorIndexConfig(class *models.Class) error {
-	if !hasTargetVectors(class) || class.VectorIndexType != "" {
+	if class.VectorIndexType != "" {
 		parsed, err := p.parseGivenVectorIndexConfig(class.VectorIndexType, class.VectorIndexConfig, p.modules.IsMultiVector(class.Vectorizer), p.defaultQuantization)
 		if err != nil {
 			return err

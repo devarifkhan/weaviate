@@ -787,6 +787,34 @@ func (m *Migrator) UpdateVectorIndexConfigs(ctx context.Context,
 	return idx.updateVectorIndexConfigs(ctx, updated)
 }
 
+func (m *Migrator) GetVectorIndexNames(className string) []string {
+	idx := m.db.GetIndex(schema.ClassName(className))
+	if idx == nil {
+		return nil
+	}
+
+	configs := idx.GetVectorIndexConfigs()
+	names := make([]string, 0, len(configs))
+	for name := range configs {
+		names = append(names, name)
+	}
+	return names
+}
+
+func (m *Migrator) DropVectorIndex(ctx context.Context, className string, targetVector string) error {
+	indexID := indexID(schema.ClassName(className))
+
+	m.classLocks.Lock(indexID)
+	defer m.classLocks.Unlock(indexID)
+
+	idx := m.db.GetIndex(schema.ClassName(className))
+	if idx == nil {
+		return errors.Errorf("cannot drop vector index of non-existing index for %s", className)
+	}
+
+	return idx.dropVectorIndex(ctx, targetVector)
+}
+
 func (m *Migrator) ValidateVectorIndexConfigUpdate(
 	old, updated schemaConfig.VectorIndexConfig,
 ) error {

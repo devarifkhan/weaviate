@@ -303,6 +303,44 @@ func (l *LazyLoadShard) UpdateVectorIndexConfigs(ctx context.Context, updated ma
 	return l.shard.UpdateVectorIndexConfigs(ctx, updated)
 }
 
+func (l *LazyLoadShard) DropVectorIndex(ctx context.Context, targetVector string) error {
+	if l.isLoaded() {
+		return l.shard.DropVectorIndex(ctx, targetVector)
+	}
+
+	// Shard is not loaded — remove files directly from disk.
+	vectorsBucket := fmt.Sprintf("%s_%s", helpers.VectorsBucketLSM, targetVector)
+	if err := l.shard.removeBucketDir(l.pathLSM(), vectorsBucket); err != nil {
+		return err
+	}
+
+	compressedBucket := helpers.GetCompressedBucketName(targetVector)
+	if err := l.shard.removeBucketDir(l.pathLSM(), compressedBucket); err != nil {
+		return err
+	}
+
+	// Remove HNSW commit log and snapshot directories.
+	shardDir := shardPath(l.shardOpts.index.path(), l.shardOpts.name)
+	vectorIndexID := fmt.Sprintf("%s_%s", helpers.VectorsBucketLSM, targetVector)
+
+	if err := l.shard.removeBucketDir(shardDir, vectorIndexID+".hnsw.commitlog.d"); err != nil {
+		return err
+	}
+
+	if err := l.shard.removeBucketDir(shardDir, vectorIndexID+".hnsw.snapshot.d"); err != nil {
+		return err
+	}
+
+	// Remove the index checkpoint entry for this vector.
+	if l.shardOpts.indexCheckpoints != nil {
+		if err := l.shardOpts.indexCheckpoints.Delete(l.ID(), targetVector); err != nil {
+			return fmt.Errorf("delete checkpoint for vector %q: %w", targetVector, err)
+		}
+	}
+
+	return nil
+}
+
 func (l *LazyLoadShard) SetAsyncReplicationState(ctx context.Context, config AsyncReplicationConfig, enabled bool) error {
 	if err := l.Load(ctx); err != nil {
 		return err
