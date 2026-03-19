@@ -329,8 +329,8 @@ func asyncReplicationEnabled(schemaReader schema.SchemaReader, collection string
 }
 
 // readReplicasForShard gathers only read replicas for one shard.
-// Both ACTIVE and WARMING_UP nodes are eligible for reads so that all shards
-// expose the same replica count — preventing "inconsistent consistency levels".
+// Only ACTIVE nodes are eligible for reads: a WARMING_UP node has not yet finished
+// restoring its DB from the RAFT snapshot and may return incomplete or stale data.
 // SHUTTING_DOWN nodes are excluded because they are draining and will not serve requests.
 func (r *singleTenantRouter) readReplicasForShard(collection, tenant, shard string) ([]types.Replica, error) {
 	replicas, err := r.schemaReader.ShardReplicas(collection, shard)
@@ -338,8 +338,8 @@ func (r *singleTenantRouter) readReplicasForShard(collection, tenant, shard stri
 		return nil, fmt.Errorf("error while getting replicas for collection %q shard %q: %w", collection, shard, err)
 	}
 
-	active, warmingUp := partitionByLifecycle(replicas, r.nodeSelector)
-	readNodeNames := r.replicationFSMReader.FilterOneShardReplicasRead(collection, shard, append(active, warmingUp...))
+	activeReplicas, _ := partitionByLifecycle(replicas, r.nodeSelector)
+	readNodeNames := r.replicationFSMReader.FilterOneShardReplicasRead(collection, shard, activeReplicas)
 	return buildReplicas(readNodeNames, shard, r.nodeSelector.NodeHostname), nil
 }
 
@@ -543,8 +543,8 @@ func (r *multiTenantRouter) getReadReplicasLocation(collection string, tenant, s
 		return types.ReadReplicaSet{}, err
 	}
 
-	active, warmingUp := partitionByLifecycle(replicas, r.nodeSelector)
-	readNodeNames := r.replicationFSMReader.FilterOneShardReplicasRead(collection, shard, append(active, warmingUp...))
+	activeReplicas, _ := partitionByLifecycle(replicas, r.nodeSelector)
+	readNodeNames := r.replicationFSMReader.FilterOneShardReplicasRead(collection, shard, activeReplicas)
 	readReplicas := buildReplicas(readNodeNames, shard, r.nodeSelector.NodeHostname)
 
 	return types.ReadReplicaSet{Replicas: readReplicas}, nil
