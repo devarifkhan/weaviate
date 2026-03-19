@@ -56,8 +56,8 @@ func TestPartitionByLifecycle_AllActive(t *testing.T) {
 	require.Empty(t, ws.AdditionalReplicas)
 }
 
-// TestPartitionByLifecycle_WarmingUpAsyncOn verifies that a WARMING_UP node is excluded from reads
-// and placed in AdditionalReplicas for writes when async replication is enabled.
+// TestPartitionByLifecycle_WarmingUpAsyncOn verifies that a WARMING_UP node is included in reads
+// alongside ACTIVE nodes, and placed in AdditionalReplicas for writes when async replication is enabled.
 func TestPartitionByLifecycle_WarmingUpAsyncOn(t *testing.T) {
 	mockSchemaReader := schema.NewMockSchemaReader(t)
 	mockReplicationFSM := replicationTypes.NewMockReplicationFSMReader(t)
@@ -73,9 +73,10 @@ func TestPartitionByLifecycle_WarmingUpAsyncOn(t *testing.T) {
 	mockSchemaReader.EXPECT().Shards(mock.Anything).Return(state.AllPhysicalShards(), nil).Maybe()
 	mockSchemaReader.EXPECT().ShardReplicas("TestClass", "shard1").Return([]string{"node1", "node2"}, nil).Times(2)
 
+	// WARMING_UP node is included in reads to keep replica counts consistent across shards.
 	mockReplicationFSM.EXPECT().
-		FilterOneShardReplicasRead("TestClass", "shard1", []string{"node1"}).
-		Return([]string{"node1"})
+		FilterOneShardReplicasRead("TestClass", "shard1", []string{"node1", "node2"}).
+		Return([]string{"node1", "node2"})
 	mockReplicationFSM.EXPECT().
 		FilterOneShardReplicasWrite("TestClass", "shard1", []string{"node1"}).
 		Return([]string{"node1"}, []string{})
@@ -84,15 +85,14 @@ func TestPartitionByLifecycle_WarmingUpAsyncOn(t *testing.T) {
 	rs, ws, err := r.GetReadWriteReplicasLocation("TestClass", "", "shard1")
 
 	require.NoError(t, err)
-	require.Len(t, rs.Replicas, 1, "WARMING_UP node must be excluded from reads")
-	require.Equal(t, "node1", rs.Replicas[0].NodeName)
+	require.Len(t, rs.Replicas, 2, "WARMING_UP node must be included in reads")
 	require.Len(t, ws.Replicas, 1, "only ACTIVE node counts for write quorum")
 	require.Len(t, ws.AdditionalReplicas, 1, "WARMING_UP node goes to AdditionalReplicas when async is on")
 	require.Equal(t, "node2", ws.AdditionalReplicas[0].NodeName)
 }
 
-// TestPartitionByLifecycle_WarmingUpAsyncOff verifies that a WARMING_UP node is excluded from reads
-// but included in the quorum write set when async replication is disabled. Without a repair loop,
+// TestPartitionByLifecycle_WarmingUpAsyncOff verifies that a WARMING_UP node is included in reads
+// and also in the quorum write set when async replication is disabled. Without a repair loop,
 // including it in quorum (even at the cost of a brief block) is safer than silent data loss.
 func TestPartitionByLifecycle_WarmingUpAsyncOff(t *testing.T) {
 	mockSchemaReader := schema.NewMockSchemaReader(t)
@@ -109,9 +109,10 @@ func TestPartitionByLifecycle_WarmingUpAsyncOff(t *testing.T) {
 	mockSchemaReader.EXPECT().Shards(mock.Anything).Return(state.AllPhysicalShards(), nil).Maybe()
 	mockSchemaReader.EXPECT().ShardReplicas("TestClass", "shard1").Return([]string{"node1", "node2"}, nil).Times(2)
 
+	// WARMING_UP node is included in reads to keep replica counts consistent across shards.
 	mockReplicationFSM.EXPECT().
-		FilterOneShardReplicasRead("TestClass", "shard1", []string{"node1"}).
-		Return([]string{"node1"})
+		FilterOneShardReplicasRead("TestClass", "shard1", []string{"node1", "node2"}).
+		Return([]string{"node1", "node2"})
 	mockReplicationFSM.EXPECT().
 		FilterOneShardReplicasWrite("TestClass", "shard1", []string{"node1"}).
 		Return([]string{"node1"}, []string{})
@@ -120,8 +121,7 @@ func TestPartitionByLifecycle_WarmingUpAsyncOff(t *testing.T) {
 	rs, ws, err := r.GetReadWriteReplicasLocation("TestClass", "", "shard1")
 
 	require.NoError(t, err)
-	require.Len(t, rs.Replicas, 1, "WARMING_UP node must be excluded from reads")
-	require.Equal(t, "node1", rs.Replicas[0].NodeName)
+	require.Len(t, rs.Replicas, 2, "WARMING_UP node must be included in reads")
 	require.Len(t, ws.Replicas, 2, "WARMING_UP node joins quorum when async is off to prevent data loss")
 	require.Empty(t, ws.AdditionalReplicas)
 }
@@ -159,6 +159,7 @@ func TestPartitionByLifecycle_ShuttingDownExcludedFromBoth(t *testing.T) {
 }
 
 // TestPartitionByLifecycle_MixedStates covers a realistic mix: one active, one warming-up (async on), one shutting-down.
+// ACTIVE + WARMING_UP nodes participate in reads; only SHUTTING_DOWN is excluded.
 func TestPartitionByLifecycle_MixedStates(t *testing.T) {
 	mockSchemaReader := schema.NewMockSchemaReader(t)
 	mockReplicationFSM := replicationTypes.NewMockReplicationFSMReader(t)
@@ -175,9 +176,10 @@ func TestPartitionByLifecycle_MixedStates(t *testing.T) {
 	mockSchemaReader.EXPECT().Shards(mock.Anything).Return(state.AllPhysicalShards(), nil).Maybe()
 	mockSchemaReader.EXPECT().ShardReplicas("TestClass", "shard1").Return([]string{"node1", "node2", "node3"}, nil).Times(2)
 
+	// ACTIVE + WARMING_UP are readable; SHUTTING_DOWN is excluded.
 	mockReplicationFSM.EXPECT().
-		FilterOneShardReplicasRead("TestClass", "shard1", []string{"node1"}).
-		Return([]string{"node1"})
+		FilterOneShardReplicasRead("TestClass", "shard1", []string{"node1", "node2"}).
+		Return([]string{"node1", "node2"})
 	mockReplicationFSM.EXPECT().
 		FilterOneShardReplicasWrite("TestClass", "shard1", []string{"node1"}).
 		Return([]string{"node1"}, []string{})
@@ -187,8 +189,7 @@ func TestPartitionByLifecycle_MixedStates(t *testing.T) {
 
 	require.NoError(t, err)
 
-	require.Len(t, rs.Replicas, 1)
-	require.Equal(t, "node1", rs.Replicas[0].NodeName)
+	require.Len(t, rs.Replicas, 2, "ACTIVE and WARMING_UP nodes should both be readable")
 
 	require.Len(t, ws.Replicas, 1)
 	require.Equal(t, "node1", ws.Replicas[0].NodeName)
@@ -258,6 +259,20 @@ func TestPartitionByLifecycle_WriteReplicaSetDirectly(t *testing.T) {
 			fsmAdditional: []string{},
 			wantWrite:     []string{"n1"},
 		},
+		{
+			name:     "all warming-up, async on — falls back to quorum",
+			replicas: []string{"n1", "n2"},
+			lifecycles: map[string]ucluster.NodeLifecycle{
+				"n1": ucluster.NodeLifecycleWarmingUp,
+				"n2": ucluster.NodeLifecycleWarmingUp,
+			},
+			// async ON but no ACTIVE quorum nodes → WARMING_UP must join quorum to avoid
+			// "cannot reach enough replicas" failures at cluster startup.
+			asyncEnabled:  true,
+			fsmWrite:      nil, // FSM is called with nil activeReplicas
+			fsmAdditional: nil,
+			wantWrite:     []string{"n1", "n2"},
+		},
 	}
 
 	for _, tt := range tests {
@@ -299,10 +314,10 @@ func TestPartitionByLifecycle_WriteReplicaSetDirectly(t *testing.T) {
 	}
 }
 
-// TestPartitionByLifecycle_AllWarmingUpFallback verifies that when no ACTIVE nodes exist,
-// WARMING_UP nodes are used as a read fallback to prevent "no read replica found" failures
-// during cluster startup before lifecycle promotion completes.
-func TestPartitionByLifecycle_AllWarmingUpFallback(t *testing.T) {
+// TestPartitionByLifecycle_AllWarmingUpRead verifies that when all nodes are WARMING_UP,
+// they are all included in reads — there is no longer a special "fallback"; WARMING_UP nodes
+// always participate in reads alongside ACTIVE nodes to maintain consistent replica counts.
+func TestPartitionByLifecycle_AllWarmingUpRead(t *testing.T) {
 	mockSchemaReader := schema.NewMockSchemaReader(t)
 	mockReplicationFSM := replicationTypes.NewMockReplicationFSMReader(t)
 	mockNodeSelector := ucluster.NewMockNodeSelector(t)
@@ -315,7 +330,7 @@ func TestPartitionByLifecycle_AllWarmingUpFallback(t *testing.T) {
 	mockSchemaReader.EXPECT().Shards(mock.Anything).Return(state.AllPhysicalShards(), nil).Maybe()
 	mockSchemaReader.EXPECT().ShardReplicas("TestClass", "shard1").Return([]string{"node1", "node2"}, nil)
 
-	// Fallback: both WARMING_UP nodes are passed to FSM for reads.
+	// Both WARMING_UP nodes are passed to the FSM for reads.
 	mockReplicationFSM.EXPECT().
 		FilterOneShardReplicasRead("TestClass", "shard1", []string{"node1", "node2"}).
 		Return([]string{"node1", "node2"})
@@ -324,7 +339,7 @@ func TestPartitionByLifecycle_AllWarmingUpFallback(t *testing.T) {
 	rs, err := r.GetReadReplicasLocation("TestClass", "", "shard1")
 
 	require.NoError(t, err)
-	require.Len(t, rs.Replicas, 2, "WARMING_UP nodes must be used as fallback when no ACTIVE nodes exist")
+	require.Len(t, rs.Replicas, 2, "all WARMING_UP nodes should be readable")
 }
 
 func replicaNames(replicas []types.Replica) []string {

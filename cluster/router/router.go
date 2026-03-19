@@ -320,21 +320,6 @@ func partitionByLifecycle(nodeNames []string, nodeSelector cluster.NodeSelector)
 	return
 }
 
-// readCandidates returns the nodes eligible to serve reads.
-// ACTIVE nodes are preferred. If none exist (e.g. all nodes are still warming up),
-// WARMING_UP nodes are used as a fallback to avoid "no read replica found" failures
-// during cluster startup before lifecycle promotion completes.
-// SHUTTING_DOWN nodes are never used.
-func readCandidates(active, warmingUp []string) []string {
-	if len(active) > 0 {
-		return active
-	}
-	if len(warmingUp) > 0 {
-		return warmingUp
-	}
-	return active // both empty: preserve active's nil/[]string{} for caller
-}
-
 // asyncReplicationEnabled reports whether the collection has async replication turned on.
 // It is called only when warmingUp nodes are present, so it is off the hot path.
 // ReadOnlyClass reads from the local in-memory FSM snapshot — no network round-trip.
@@ -344,8 +329,9 @@ func asyncReplicationEnabled(schemaReader schema.SchemaReader, collection string
 }
 
 // readReplicasForShard gathers only read replicas for one shard.
-// ACTIVE nodes are preferred; WARMING_UP nodes are used as fallback if no ACTIVE nodes exist.
-// SHUTTING_DOWN nodes are never used.
+// Both ACTIVE and WARMING_UP nodes are eligible for reads so that all shards
+// expose the same replica count — preventing "inconsistent consistency levels".
+// SHUTTING_DOWN nodes are excluded because they are draining and will not serve requests.
 func (r *singleTenantRouter) readReplicasForShard(collection, tenant, shard string) ([]types.Replica, error) {
 	replicas, err := r.schemaReader.ShardReplicas(collection, shard)
 	if err != nil {
@@ -353,7 +339,7 @@ func (r *singleTenantRouter) readReplicasForShard(collection, tenant, shard stri
 	}
 
 	active, warmingUp := partitionByLifecycle(replicas, r.nodeSelector)
-	readNodeNames := r.replicationFSMReader.FilterOneShardReplicasRead(collection, shard, readCandidates(active, warmingUp))
+	readNodeNames := r.replicationFSMReader.FilterOneShardReplicasRead(collection, shard, append(active, warmingUp...))
 	return buildReplicas(readNodeNames, shard, r.nodeSelector.NodeHostname), nil
 }
 
@@ -372,11 +358,12 @@ func (r *singleTenantRouter) writeReplicasForShard(collection, tenant, shard str
 	activeReplicas, warmingUpReplicas := partitionByLifecycle(replicas, r.nodeSelector)
 	writeNodeNames, additionalWriteNodeNames := r.replicationFSMReader.FilterOneShardReplicasWrite(collection, shard, activeReplicas)
 	if len(warmingUpReplicas) > 0 {
-		if asyncReplicationEnabled(r.schemaReader, collection) {
-			// Async: repair loop closes any gaps
+		if asyncReplicationEnabled(r.schemaReader, collection) && len(writeNodeNames) > 0 {
+			// Async ON + have ACTIVE quorum nodes: repair loop closes any gaps on WARMING_UP nodes
 			additionalWriteNodeNames = append(additionalWriteNodeNames, warmingUpReplicas...)
 		} else {
-			// Sync: no repair backstop include in quorum
+			// Async OFF (no repair backstop), or no ACTIVE nodes at all: include in quorum to avoid
+			// "cannot reach enough replicas" failures during startup / to prevent silent data loss
 			writeNodeNames = append(writeNodeNames, warmingUpReplicas...)
 		}
 	}
@@ -557,7 +544,7 @@ func (r *multiTenantRouter) getReadReplicasLocation(collection string, tenant, s
 	}
 
 	active, warmingUp := partitionByLifecycle(replicas, r.nodeSelector)
-	readNodeNames := r.replicationFSMReader.FilterOneShardReplicasRead(collection, shard, readCandidates(active, warmingUp))
+	readNodeNames := r.replicationFSMReader.FilterOneShardReplicasRead(collection, shard, append(active, warmingUp...))
 	readReplicas := buildReplicas(readNodeNames, shard, r.nodeSelector.NodeHostname)
 
 	return types.ReadReplicaSet{Replicas: readReplicas}, nil
@@ -582,11 +569,12 @@ func (r *multiTenantRouter) getWriteReplicasLocation(collection string, tenant, 
 	activeReplicas, warmingUpReplicas := partitionByLifecycle(replicas, r.nodeSelector)
 	writeNodeNames, additionalWriteNodeNames := r.replicationFSMReader.FilterOneShardReplicasWrite(collection, shard, activeReplicas)
 	if len(warmingUpReplicas) > 0 {
-		if asyncReplicationEnabled(r.schemaReader, collection) {
-			// Async: repair loop closes any gaps
+		if asyncReplicationEnabled(r.schemaReader, collection) && len(writeNodeNames) > 0 {
+			// Async ON + have ACTIVE quorum nodes: repair loop closes any gaps on WARMING_UP nodes
 			additionalWriteNodeNames = append(additionalWriteNodeNames, warmingUpReplicas...)
 		} else {
-			// Sync: no repair backstop include in quorum
+			// Async OFF (no repair backstop), or no ACTIVE nodes at all: include in quorum to avoid
+			// "cannot reach enough replicas" failures during startup / to prevent silent data loss
 			writeNodeNames = append(writeNodeNames, warmingUpReplicas...)
 		}
 	}
