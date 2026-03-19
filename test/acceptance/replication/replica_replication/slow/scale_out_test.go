@@ -42,6 +42,7 @@ func (suite *ReplicationTestSuite) TestReplicationReplicateScaleOut() {
 		WithWeaviateCluster(3).
 		WithWeaviateEnv("REPLICATION_ENGINE_MAX_WORKERS", "10").
 		WithWeaviateEnv("REPLICA_MOVEMENT_ENABLED", "true").
+		WithWeaviateEnv("PERSISTENCE_MEMTABLES_FLUSH_DIRTY_AFTER_SECONDS", "5").
 		Start(mainCtx)
 	require.Nil(t, err)
 	defer func() {

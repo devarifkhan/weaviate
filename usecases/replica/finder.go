@@ -448,6 +448,19 @@ func (f *Finder) DigestObjectsInRange(ctx context.Context,
 	return f.client.DigestObjectsInRange(ctx, host, f.class, shardName, initialUUID, finalUUID, limit)
 }
 
+// CompareDigests sends the source's local digests to the target node and
+// returns a subset requiring source-side action: objects that are missing on
+// the target, stale on the target (source has a strictly newer UpdateTime), or
+// equal-timestamp conflicts where both nodes hold the same UpdateTime but may
+// have diverged. The caller is responsible for applying a deterministic
+// tiebreaker (e.g. node-name comparison) to equal-timestamp conflicts before
+// deciding whether to propagate.
+func (f *Finder) CompareDigests(ctx context.Context,
+	shardName string, host string, digests []types.RepairResponse,
+) ([]types.RepairResponse, error) {
+	return f.client.CompareDigests(ctx, host, f.class, shardName, digests)
+}
+
 // Overwrite specified object with most recent contents
 func (f *Finder) Overwrite(ctx context.Context,
 	host, index, shard string, xs []*objects.VObject,

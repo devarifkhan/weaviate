@@ -14,8 +14,10 @@ package clusterapi_test
 import (
 	"bytes"
 	"context"
+	"encoding/binary"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"sync"
@@ -24,6 +26,7 @@ import (
 	"time"
 
 	"github.com/go-openapi/strfmt"
+	"github.com/google/uuid"
 	"github.com/klauspost/compress/zstd"
 	"github.com/sirupsen/logrus/hooks/test"
 	"github.com/stretchr/testify/assert"
@@ -31,6 +34,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/weaviate/weaviate/adapters/handlers/rest/clusterapi"
+	"github.com/weaviate/weaviate/cluster/router/types"
 	"github.com/weaviate/weaviate/entities/models"
 	"github.com/weaviate/weaviate/usecases/cluster"
 	configRuntime "github.com/weaviate/weaviate/usecases/config/runtime"
@@ -64,6 +68,9 @@ func TestMaintenanceModeReplicatedIndices(t *testing.T) {
 		{"GET", "/objects"},
 		{"POST", "/objects"},
 		{"DELETE", "/objects"},
+		{"POST", "/objects/digestsInRange"},
+		{"POST", "/objects/compareDigests"},
+		{"POST", "/objects/hashtree/level/0"},
 		{"PUT", "/replication-factor:increase"},
 		{"POST", ":commit"},
 		{"POST", ":abort"},
@@ -218,7 +225,7 @@ func TestReplicatedIndicesWorkQueue(t *testing.T) {
 			httpStatuses := make(chan int, tc.numRequests)
 			for i := 0; i < tc.numRequests; i++ {
 				go func() {
-					res, err := http.DefaultClient.Do(req)
+					res, err := http.DefaultClient.Do(req.Clone(req.Context()))
 					assert.Nil(t, err)
 					defer res.Body.Close()
 					httpStatuses <- res.StatusCode
@@ -721,4 +728,240 @@ func TestPutOverwriteObjectsCompression(t *testing.T) {
 			}
 		})
 	}
+}
+
+// newCompareDigestsServer builds a test HTTP server that serves the replicated
+// indices handler backed by the supplied replicator.
+func newCompareDigestsServer(t *testing.T, replicator replicaTypes.Replicator) (*httptest.Server, string) {
+	t.Helper()
+	logger, _ := test.NewNullLogger()
+	indices := clusterapi.NewReplicatedIndices(
+		replicator,
+		clusterapi.NewNoopAuthHandler(),
+		func() bool { return false },
+		cluster.RequestQueueConfig{},
+		logger,
+		func() bool { return true },
+	)
+	mux := http.NewServeMux()
+	mux.Handle("/replicas/indices/", indices.Indices())
+	server := httptest.NewServer(mux)
+	t.Cleanup(server.Close)
+	url := server.URL + "/replicas/indices/C1/shards/S1/objects/compareDigests"
+	return server, url
+}
+
+// buildBinaryDigests encodes a slice of RepairResponse records into the 25-byte
+// binary wire format used by postCompareDigests (UUID + UpdateTime + flags byte).
+func buildBinaryDigests(t *testing.T, records []types.RepairResponse) []byte {
+	t.Helper()
+	buf := make([]byte, len(records)*replica.CompareDigestsRecordLength)
+	for i, r := range records {
+		id, err := uuid.Parse(r.ID)
+		require.NoError(t, err)
+		off := i * replica.CompareDigestsRecordLength
+		copy(buf[off:], id[:])
+		binary.BigEndian.PutUint64(buf[off+16:], uint64(r.UpdateTime))
+		if r.Deleted {
+			buf[off+24] = replica.CompareDigestsFlagDeleted
+		}
+	}
+	return buf
+}
+
+func TestPostCompareDigests(t *testing.T) {
+	t.Parallel()
+
+	const (
+		testUUID1 = "73f2eb5f-5abf-447a-81ca-74b1dd168241"
+		testUUID2 = "73f2eb5f-5abf-447a-81ca-74b1dd168242"
+	)
+
+	now := time.Now().UnixMilli()
+
+	sourceDigests := []types.RepairResponse{
+		{ID: testUUID1, UpdateTime: now},
+		{ID: testUUID2, UpdateTime: now + 1000},
+	}
+	// The target reports uuid1 as missing and uuid2 as stale.
+	staleDigests := []types.RepairResponse{
+		{ID: testUUID1, UpdateTime: 0},
+		{ID: testUUID2, UpdateTime: now},
+	}
+
+	t.Run("HappyPath", func(t *testing.T) {
+		t.Parallel()
+		rep := replicaTypes.NewMockReplicator(t)
+		rep.EXPECT().
+			CompareDigests(mock.Anything, "C1", "S1", mock.MatchedBy(func(d []types.RepairResponse) bool {
+				return len(d) == 2
+			})).
+			Return(staleDigests, nil)
+
+		_, url := newCompareDigestsServer(t, rep)
+
+		body := buildBinaryDigests(t, sourceDigests)
+		req, err := http.NewRequestWithContext(context.Background(), http.MethodPost, url, bytes.NewReader(body))
+		require.NoError(t, err)
+		req.Header.Set("Content-Type", "application/octet-stream")
+		// compareDigests is binary-only; no X-Accept-Response-Encoding needed.
+
+		resp, err := http.DefaultClient.Do(req)
+		require.NoError(t, err)
+		defer resp.Body.Close()
+
+		require.Equal(t, http.StatusOK, resp.StatusCode)
+		assert.Equal(t, "application/octet-stream", resp.Header.Get("Content-Type"))
+		// No X-Response-Encoding header — the protocol is unconditionally binary.
+		assert.Empty(t, resp.Header.Get("X-Response-Encoding"))
+
+		respBody, err := io.ReadAll(resp.Body)
+		require.NoError(t, err)
+		require.Equal(t, len(staleDigests)*replica.CompareDigestsRecordLength, len(respBody))
+
+		// Decode and verify each returned stale record.
+		for i, want := range staleDigests {
+			off := i * replica.CompareDigestsRecordLength
+			rec := respBody[off : off+replica.CompareDigestsRecordLength]
+			gotID, err := uuid.FromBytes(rec[:16])
+			require.NoError(t, err)
+			assert.Equal(t, want.ID, gotID.String())
+			assert.Equal(t, uint64(want.UpdateTime), binary.BigEndian.Uint64(rec[16:24]))
+			assert.Equal(t, want.Deleted, rec[24]&replica.CompareDigestsFlagDeleted != 0)
+		}
+	})
+
+	t.Run("EmptyBody", func(t *testing.T) {
+		t.Parallel()
+		rep := replicaTypes.NewMockReplicator(t)
+		rep.EXPECT().
+			CompareDigests(mock.Anything, "C1", "S1", []types.RepairResponse(nil)).
+			Return(nil, nil)
+
+		_, url := newCompareDigestsServer(t, rep)
+
+		req, err := http.NewRequestWithContext(context.Background(), http.MethodPost, url, http.NoBody)
+		require.NoError(t, err)
+
+		resp, err := http.DefaultClient.Do(req)
+		require.NoError(t, err)
+		defer resp.Body.Close()
+
+		require.Equal(t, http.StatusOK, resp.StatusCode)
+		respBody, err := io.ReadAll(resp.Body)
+		require.NoError(t, err)
+		assert.Empty(t, respBody)
+	})
+
+	t.Run("InvalidPayloadLength", func(t *testing.T) {
+		t.Parallel()
+		// A payload of 10 bytes is not a multiple of CompareDigestsRecordLength (25).
+		rep := newFakeReplicator(false)
+		_, url := newCompareDigestsServer(t, rep)
+
+		req, err := http.NewRequestWithContext(context.Background(), http.MethodPost, url,
+			bytes.NewReader([]byte{0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a}))
+		require.NoError(t, err)
+		req.Header.Set("Content-Type", "application/octet-stream")
+
+		resp, err := http.DefaultClient.Do(req)
+		require.NoError(t, err)
+		defer resp.Body.Close()
+
+		assert.Equal(t, http.StatusBadRequest, resp.StatusCode)
+	})
+
+	t.Run("ReplicatorError", func(t *testing.T) {
+		t.Parallel()
+		rep := replicaTypes.NewMockReplicator(t)
+		rep.EXPECT().
+			CompareDigests(mock.Anything, "C1", "S1", mock.Anything).
+			Return(nil, fmt.Errorf("storage unavailable"))
+
+		_, url := newCompareDigestsServer(t, rep)
+
+		body := buildBinaryDigests(t, sourceDigests)
+		req, err := http.NewRequestWithContext(context.Background(), http.MethodPost, url, bytes.NewReader(body))
+		require.NoError(t, err)
+		req.Header.Set("Content-Type", "application/octet-stream")
+
+		resp, err := http.DefaultClient.Do(req)
+		require.NoError(t, err)
+		defer resp.Body.Close()
+
+		assert.Equal(t, http.StatusInternalServerError, resp.StatusCode)
+	})
+
+	t.Run("RequestPayloadRoundTrip", func(t *testing.T) {
+		t.Parallel()
+		// Verify that the handler decodes the binary request faithfully:
+		// each UUID and UpdateTime must match what the client encoded.
+		var gotDigests []types.RepairResponse
+		rep := replicaTypes.NewMockReplicator(t)
+		rep.EXPECT().
+			CompareDigests(mock.Anything, "C1", "S1", mock.MatchedBy(func(d []types.RepairResponse) bool {
+				gotDigests = d
+				return true
+			})).
+			Return(nil, nil)
+
+		_, url := newCompareDigestsServer(t, rep)
+
+		body := buildBinaryDigests(t, sourceDigests)
+		req, err := http.NewRequestWithContext(context.Background(), http.MethodPost, url, bytes.NewReader(body))
+		require.NoError(t, err)
+
+		resp, err := http.DefaultClient.Do(req)
+		require.NoError(t, err)
+		defer resp.Body.Close()
+		require.Equal(t, http.StatusOK, resp.StatusCode)
+
+		require.Len(t, gotDigests, len(sourceDigests))
+		for i, want := range sourceDigests {
+			assert.Equal(t, want.ID, gotDigests[i].ID)
+			assert.Equal(t, want.UpdateTime, gotDigests[i].UpdateTime)
+		}
+	})
+
+	t.Run("DeletedFlagRoundTrip", func(t *testing.T) {
+		t.Parallel()
+		// When the replicator returns Deleted=true for an object, the response
+		// flags byte must have CompareDigestsFlagDeleted set, and the client
+		// must decode it back to Deleted=true.
+		deletedDigests := []types.RepairResponse{
+			{ID: testUUID1, UpdateTime: now - 1000, Deleted: true},
+			{ID: testUUID2, UpdateTime: now, Deleted: false},
+		}
+		rep := replicaTypes.NewMockReplicator(t)
+		rep.EXPECT().
+			CompareDigests(mock.Anything, "C1", "S1", mock.Anything).
+			Return(deletedDigests, nil)
+
+		_, url := newCompareDigestsServer(t, rep)
+
+		body := buildBinaryDigests(t, sourceDigests)
+		req, err := http.NewRequestWithContext(context.Background(), http.MethodPost, url, bytes.NewReader(body))
+		require.NoError(t, err)
+		req.Header.Set("Content-Type", "application/octet-stream")
+
+		resp, err := http.DefaultClient.Do(req)
+		require.NoError(t, err)
+		defer resp.Body.Close()
+
+		require.Equal(t, http.StatusOK, resp.StatusCode)
+		respBody, err := io.ReadAll(resp.Body)
+		require.NoError(t, err)
+		require.Equal(t, len(deletedDigests)*replica.CompareDigestsRecordLength, len(respBody))
+
+		for i, want := range deletedDigests {
+			off := i * replica.CompareDigestsRecordLength
+			rec := respBody[off : off+replica.CompareDigestsRecordLength]
+			gotID, err := uuid.FromBytes(rec[:16])
+			require.NoError(t, err)
+			assert.Equal(t, want.ID, gotID.String())
+			assert.Equal(t, uint64(want.UpdateTime), binary.BigEndian.Uint64(rec[16:24]))
+			assert.Equal(t, want.Deleted, rec[24]&replica.CompareDigestsFlagDeleted != 0,
+				"record %d: Deleted flag mismatch", i)
+		}
+	})
 }
