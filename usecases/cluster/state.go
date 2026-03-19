@@ -57,6 +57,11 @@ type NodeSelector interface {
 	Leave() error
 	// Shutdown called when leaves the cluster gracefully and shuts down the memberlist instance
 	Shutdown() error
+	// NodeLifecycle returns the lifecycle state of the named node as gossipped via memberlist metadata.
+	// Returns NodeLifecycleActive when metadata is unavailable, to preserve backward compatibility with old nodes.
+	NodeLifecycle(nodeName string) NodeLifecycle
+	// SetNodeLifecycle updates this node's lifecycle state and re-gossips it to peers immediately.
+	SetNodeLifecycle(lc NodeLifecycle) error
 }
 
 type State struct {
@@ -172,8 +177,9 @@ func Init(userConfig Config, raftTimeoutsMultiplier int, dataPath string, nonSto
 			dataPath: dataPath,
 			log:      logger,
 			metadata: NodeMetadata{
-				RestPort: userConfig.DataBindPort,
-				GrpcPort: userConfig.DataBindPort,
+				RestPort:  userConfig.DataBindPort,
+				GrpcPort:  userConfig.DataBindPort,
+				Lifecycle: NodeLifecycleWarmingUp,
 			},
 		},
 	}
@@ -412,6 +418,28 @@ func (s *State) NodeHostname(nodeName string) (string, bool) {
 	}
 
 	return "", false
+}
+
+// NodeLifecycle returns the lifecycle state gossipped by the named node via memberlist metadata.
+// Returns NodeLifecycleActive for unknown nodes or nodes running older software without the lifecycle field,
+// preserving backward compatibility.
+func (s *State) NodeLifecycle(nodeName string) NodeLifecycle {
+	for _, mem := range s.list.Members() {
+		if mem.Name == nodeName {
+			meta, err := nodeMetadata(mem)
+			if err != nil || meta.Lifecycle == "" {
+				return NodeLifecycleActive
+			}
+			return meta.Lifecycle
+		}
+	}
+	return NodeLifecycleActive
+}
+
+// SetNodeLifecycle updates this node's lifecycle state in memberlist and immediately re-gossips it to peers.
+func (s *State) SetNodeLifecycle(lc NodeLifecycle) error {
+	s.delegate.setLifecycle(lc)
+	return s.list.UpdateNode(0)
 }
 
 // NodeAddress is used to resolve the node name into an ip address without the port

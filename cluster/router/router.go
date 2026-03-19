@@ -23,18 +23,13 @@ import (
 	"context"
 	"fmt"
 
-	enterrors "github.com/weaviate/weaviate/entities/errors"
-
-	"github.com/weaviate/weaviate/usecases/objects"
-
 	replicationTypes "github.com/weaviate/weaviate/cluster/replication/types"
-
-	"github.com/weaviate/weaviate/entities/models"
-
-	"github.com/weaviate/weaviate/usecases/schema"
-
 	"github.com/weaviate/weaviate/cluster/router/types"
+	enterrors "github.com/weaviate/weaviate/entities/errors"
+	"github.com/weaviate/weaviate/entities/models"
 	"github.com/weaviate/weaviate/usecases/cluster"
+	"github.com/weaviate/weaviate/usecases/objects"
+	"github.com/weaviate/weaviate/usecases/schema"
 )
 
 // Builder provides a builder for creating router instances based on configuration.
@@ -305,25 +300,70 @@ func (r *singleTenantRouter) targetShards(collection, shardName string) ([]strin
 	return []string{shardName}, nil
 }
 
+// partitionByLifecycle splits the provided node names into active and warmingUp sets.
+// Nodes in the SHUTTING_DOWN state are excluded from both sets so they never receive new requests.
+// Returns (nodeNames, nil) unchanged when all nodes are ACTIVE, avoiding an extra allocation on the common path.
+func partitionByLifecycle(nodeNames []string, nodeSelector cluster.NodeSelector) (active, warmingUp []string) {
+	if len(nodeNames) == 0 {
+		return nodeNames, nil
+	}
+	for _, name := range nodeNames {
+		switch nodeSelector.NodeLifecycle(name) {
+		case cluster.NodeLifecycleActive:
+			active = append(active, name)
+		case cluster.NodeLifecycleWarmingUp:
+			warmingUp = append(warmingUp, name)
+		case cluster.NodeLifecycleShuttingDown:
+			// excluded from both active and warmingUp: node is draining
+		}
+	}
+	return
+}
+
+// asyncReplicationEnabled reports whether the collection has async replication turned on.
+// It is called only when warmingUp nodes are present, so it is off the hot path.
+// ReadOnlyClass reads from the local in-memory FSM snapshot — no network round-trip.
+func asyncReplicationEnabled(schemaReader schema.SchemaReader, collection string) bool {
+	class := schemaReader.ReadOnlyClass(collection)
+	return class != nil && class.ReplicationConfig != nil && class.ReplicationConfig.AsyncEnabled
+}
+
 // readReplicasForShard gathers only read replicas for one shard.
+// WARMING_UP and SHUTTING_DOWN nodes are excluded: they are not ready to serve consistent reads.
 func (r *singleTenantRouter) readReplicasForShard(collection, tenant, shard string) ([]types.Replica, error) {
 	replicas, err := r.schemaReader.ShardReplicas(collection, shard)
 	if err != nil {
 		return nil, fmt.Errorf("error while getting replicas for collection %q shard %q: %w", collection, shard, err)
 	}
 
-	readNodeNames := r.replicationFSMReader.FilterOneShardReplicasRead(collection, shard, replicas)
+	activeReplicas, _ := partitionByLifecycle(replicas, r.nodeSelector)
+	readNodeNames := r.replicationFSMReader.FilterOneShardReplicasRead(collection, shard, activeReplicas)
 	return buildReplicas(readNodeNames, shard, r.nodeSelector.NodeHostname), nil
 }
 
-// writeReplicasForShard gathers only write and additional write replicas for one shard.
+// writeReplicasForShard gathers write and additional write replicas for one shard.
+// SHUTTING_DOWN nodes are excluded entirely.
+// WARMING_UP node handling depends on whether async replication is enabled:
+//   - async ON:  WARMING_UP → AdditionalReplicas (best-effort; repair loop closes any gaps)
+//   - async OFF: WARMING_UP → quorum write set (may block briefly while the shard loads,
+//     but guarantees no silent data loss since there is no repair backstop)
 func (r *singleTenantRouter) writeReplicasForShard(collection, tenant, shard string) (write, additional []types.Replica, err error) {
 	replicas, err := r.schemaReader.ShardReplicas(collection, shard)
 	if err != nil {
 		return nil, nil, fmt.Errorf("error while getting replicas for collection %q shard %q: %w", collection, shard, err)
 	}
 
-	writeNodeNames, additionalWriteNodeNames := r.replicationFSMReader.FilterOneShardReplicasWrite(collection, shard, replicas)
+	activeReplicas, warmingUpReplicas := partitionByLifecycle(replicas, r.nodeSelector)
+	writeNodeNames, additionalWriteNodeNames := r.replicationFSMReader.FilterOneShardReplicasWrite(collection, shard, activeReplicas)
+	if len(warmingUpReplicas) > 0 {
+		if asyncReplicationEnabled(r.schemaReader, collection) {
+			// Async: repair loop closes any gaps
+			additionalWriteNodeNames = append(additionalWriteNodeNames, warmingUpReplicas...)
+		} else {
+			// Sync: no repair backstop include in quorum
+			writeNodeNames = append(writeNodeNames, warmingUpReplicas...)
+		}
+	}
 
 	write = buildReplicas(writeNodeNames, shard, r.nodeSelector.NodeHostname)
 	additional = buildReplicas(additionalWriteNodeNames, shard, r.nodeSelector.NodeHostname)
@@ -500,7 +540,8 @@ func (r *multiTenantRouter) getReadReplicasLocation(collection string, tenant, s
 		return types.ReadReplicaSet{}, err
 	}
 
-	readNodeNames := r.replicationFSMReader.FilterOneShardReplicasRead(collection, shard, replicas)
+	activeReplicas, _ := partitionByLifecycle(replicas, r.nodeSelector)
+	readNodeNames := r.replicationFSMReader.FilterOneShardReplicasRead(collection, shard, activeReplicas)
 	readReplicas := buildReplicas(readNodeNames, shard, r.nodeSelector.NodeHostname)
 
 	return types.ReadReplicaSet{Replicas: readReplicas}, nil
@@ -522,7 +563,17 @@ func (r *multiTenantRouter) getWriteReplicasLocation(collection string, tenant, 
 		return types.WriteReplicaSet{}, err
 	}
 
-	writeNodeNames, additionalWriteNodeNames := r.replicationFSMReader.FilterOneShardReplicasWrite(collection, shard, replicas)
+	activeReplicas, warmingUpReplicas := partitionByLifecycle(replicas, r.nodeSelector)
+	writeNodeNames, additionalWriteNodeNames := r.replicationFSMReader.FilterOneShardReplicasWrite(collection, shard, activeReplicas)
+	if len(warmingUpReplicas) > 0 {
+		if asyncReplicationEnabled(r.schemaReader, collection) {
+			// Async: repair loop closes any gaps
+			additionalWriteNodeNames = append(additionalWriteNodeNames, warmingUpReplicas...)
+		} else {
+			// Sync: no repair backstop include in quorum
+			writeNodeNames = append(writeNodeNames, warmingUpReplicas...)
+		}
+	}
 	writeReplicas := buildReplicas(writeNodeNames, shard, r.nodeSelector.NodeHostname)
 	additionalWriteReplicas := buildReplicas(additionalWriteNodeNames, shard, r.nodeSelector.NodeHostname)
 
