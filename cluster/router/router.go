@@ -329,8 +329,9 @@ func asyncReplicationEnabled(schemaReader schema.SchemaReader, collection string
 }
 
 // readReplicasForShard gathers only read replicas for one shard.
-// Only ACTIVE nodes are eligible for reads: a WARMING_UP node has not yet finished
-// restoring its DB from the RAFT snapshot and may return incomplete or stale data.
+// ACTIVE nodes are preferred for reads. WARMING_UP nodes are used as a fallback only when no
+// ACTIVE node is available (single-node cluster or fresh multi-node cluster still bootstrapping),
+// to prevent a complete read outage during startup.
 // SHUTTING_DOWN nodes are excluded because they are draining and will not serve requests.
 func (r *singleTenantRouter) readReplicasForShard(collection, tenant, shard string) ([]types.Replica, error) {
 	replicas, err := r.schemaReader.ShardReplicas(collection, shard)
@@ -338,8 +339,12 @@ func (r *singleTenantRouter) readReplicasForShard(collection, tenant, shard stri
 		return nil, fmt.Errorf("error while getting replicas for collection %q shard %q: %w", collection, shard, err)
 	}
 
-	activeReplicas, _ := partitionByLifecycle(replicas, r.nodeSelector)
-	readNodeNames := r.replicationFSMReader.FilterOneShardReplicasRead(collection, shard, activeReplicas)
+	active, warmingUp := partitionByLifecycle(replicas, r.nodeSelector)
+	readCandidates := active
+	if len(readCandidates) == 0 {
+		readCandidates = warmingUp
+	}
+	readNodeNames := r.replicationFSMReader.FilterOneShardReplicasRead(collection, shard, readCandidates)
 	return buildReplicas(readNodeNames, shard, r.nodeSelector.NodeHostname), nil
 }
 
@@ -543,8 +548,12 @@ func (r *multiTenantRouter) getReadReplicasLocation(collection string, tenant, s
 		return types.ReadReplicaSet{}, err
 	}
 
-	activeReplicas, _ := partitionByLifecycle(replicas, r.nodeSelector)
-	readNodeNames := r.replicationFSMReader.FilterOneShardReplicasRead(collection, shard, activeReplicas)
+	active, warmingUp := partitionByLifecycle(replicas, r.nodeSelector)
+	readCandidates := active
+	if len(readCandidates) == 0 {
+		readCandidates = warmingUp
+	}
+	readNodeNames := r.replicationFSMReader.FilterOneShardReplicasRead(collection, shard, readCandidates)
 	readReplicas := buildReplicas(readNodeNames, shard, r.nodeSelector.NodeHostname)
 
 	return types.ReadReplicaSet{Replicas: readReplicas}, nil

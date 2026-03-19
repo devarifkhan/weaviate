@@ -56,8 +56,9 @@ func TestPartitionByLifecycle_AllActive(t *testing.T) {
 	require.Empty(t, ws.AdditionalReplicas)
 }
 
-// TestPartitionByLifecycle_WarmingUpAsyncOn verifies that a WARMING_UP node is excluded from reads
-// (it may have incomplete data) but placed in AdditionalReplicas for writes when async replication is enabled.
+// TestPartitionByLifecycle_WarmingUpAsyncOn verifies that when an ACTIVE node is present,
+// it is the sole read candidate (WARMING_UP node is skipped — it may have incomplete data).
+// For writes with async ON, the WARMING_UP node goes to AdditionalReplicas.
 func TestPartitionByLifecycle_WarmingUpAsyncOn(t *testing.T) {
 	mockSchemaReader := schema.NewMockSchemaReader(t)
 	mockReplicationFSM := replicationTypes.NewMockReplicationFSMReader(t)
@@ -73,7 +74,7 @@ func TestPartitionByLifecycle_WarmingUpAsyncOn(t *testing.T) {
 	mockSchemaReader.EXPECT().Shards(mock.Anything).Return(state.AllPhysicalShards(), nil).Maybe()
 	mockSchemaReader.EXPECT().ShardReplicas("TestClass", "shard1").Return([]string{"node1", "node2"}, nil).Times(2)
 
-	// Only ACTIVE nodes are passed to read FSM; WARMING_UP node is excluded from reads.
+	// ACTIVE node available → only it is passed to read FSM; WARMING_UP node skipped.
 	mockReplicationFSM.EXPECT().
 		FilterOneShardReplicasRead("TestClass", "shard1", []string{"node1"}).
 		Return([]string{"node1"})
@@ -85,15 +86,15 @@ func TestPartitionByLifecycle_WarmingUpAsyncOn(t *testing.T) {
 	rs, ws, err := r.GetReadWriteReplicasLocation("TestClass", "", "shard1")
 
 	require.NoError(t, err)
-	require.Len(t, rs.Replicas, 1, "WARMING_UP node must be excluded from reads (data may be incomplete)")
+	require.Len(t, rs.Replicas, 1, "only ACTIVE node serves reads when one is available")
 	require.Len(t, ws.Replicas, 1, "only ACTIVE node counts for write quorum")
 	require.Len(t, ws.AdditionalReplicas, 1, "WARMING_UP node goes to AdditionalReplicas when async is on")
 	require.Equal(t, "node2", ws.AdditionalReplicas[0].NodeName)
 }
 
-// TestPartitionByLifecycle_WarmingUpAsyncOff verifies that a WARMING_UP node is excluded from reads
-// but included in the quorum write set when async replication is disabled. Without a repair loop,
-// including it in quorum (even at the cost of a brief block) is safer than silent data loss.
+// TestPartitionByLifecycle_WarmingUpAsyncOff verifies that when an ACTIVE node is present,
+// only it serves reads. The WARMING_UP node is included in the quorum write set (no repair
+// backstop with async off, so it must receive every write to prevent data loss).
 func TestPartitionByLifecycle_WarmingUpAsyncOff(t *testing.T) {
 	mockSchemaReader := schema.NewMockSchemaReader(t)
 	mockReplicationFSM := replicationTypes.NewMockReplicationFSMReader(t)
@@ -121,7 +122,7 @@ func TestPartitionByLifecycle_WarmingUpAsyncOff(t *testing.T) {
 	rs, ws, err := r.GetReadWriteReplicasLocation("TestClass", "", "shard1")
 
 	require.NoError(t, err)
-	require.Len(t, rs.Replicas, 1, "WARMING_UP node must be excluded from reads (data may be incomplete)")
+	require.Len(t, rs.Replicas, 1, "only ACTIVE node serves reads when one is available")
 	require.Len(t, ws.Replicas, 2, "WARMING_UP node joins quorum when async is off to prevent data loss")
 	require.Empty(t, ws.AdditionalReplicas)
 }
@@ -314,9 +315,9 @@ func TestPartitionByLifecycle_WriteReplicaSetDirectly(t *testing.T) {
 	}
 }
 
-// TestPartitionByLifecycle_AllWarmingUpRead verifies that when all nodes are WARMING_UP,
-// reads return no replicas. WARMING_UP nodes have not finished restoring their DB and must
-// not serve reads. Callers will see "no read replica found" and retry until nodes become ACTIVE.
+// TestPartitionByLifecycle_AllWarmingUpRead verifies that when all nodes are WARMING_UP and
+// no ACTIVE node exists (single-node cluster or fresh cluster), WARMING_UP nodes are used as
+// a fallback for reads to prevent a complete read outage during startup.
 func TestPartitionByLifecycle_AllWarmingUpRead(t *testing.T) {
 	mockSchemaReader := schema.NewMockSchemaReader(t)
 	mockReplicationFSM := replicationTypes.NewMockReplicationFSMReader(t)
@@ -324,21 +325,22 @@ func TestPartitionByLifecycle_AllWarmingUpRead(t *testing.T) {
 
 	mockNodeSelector.EXPECT().NodeLifecycle("node1").Return(ucluster.NodeLifecycleWarmingUp)
 	mockNodeSelector.EXPECT().NodeLifecycle("node2").Return(ucluster.NodeLifecycleWarmingUp)
+	mockNodeSelector.EXPECT().NodeHostname(mock.Anything).Return("", true).Maybe()
 
 	state := createShardingStateWithShards([]string{"shard1"})
 	mockSchemaReader.EXPECT().Shards(mock.Anything).Return(state.AllPhysicalShards(), nil).Maybe()
 	mockSchemaReader.EXPECT().ShardReplicas("TestClass", "shard1").Return([]string{"node1", "node2"}, nil)
 
-	// No ACTIVE nodes → FSM is called with nil; no read replicas returned.
+	// No ACTIVE nodes → fall back to WARMING_UP nodes for reads.
 	mockReplicationFSM.EXPECT().
-		FilterOneShardReplicasRead("TestClass", "shard1", []string(nil)).
-		Return([]string(nil))
+		FilterOneShardReplicasRead("TestClass", "shard1", []string{"node1", "node2"}).
+		Return([]string{"node1", "node2"})
 
 	r := router.NewBuilder("TestClass", false, mockNodeSelector, nil, mockSchemaReader, mockReplicationFSM).Build()
 	rs, err := r.GetReadReplicasLocation("TestClass", "", "shard1")
 
 	require.NoError(t, err)
-	require.Empty(t, rs.Replicas, "no reads should be served when all nodes are WARMING_UP")
+	require.Len(t, rs.Replicas, 2, "WARMING_UP nodes serve as read fallback when no ACTIVE node exists")
 }
 
 // TestPartitionByLifecycle_NodeAbsentFromMemberlist reproduces the race during startup where:
@@ -371,10 +373,10 @@ func TestPartitionByLifecycle_NodeAbsentFromMemberlist(t *testing.T) {
 	mockSchemaReader.EXPECT().Shards(mock.Anything).Return(state.AllPhysicalShards(), nil).Maybe()
 	mockSchemaReader.EXPECT().ShardReplicas("TestClass", "shard1").Return([]string{"node1", "node2", "node3"}, nil).Times(2)
 
-	// node2 is excluded (ShuttingDown); active set is nil → no reads, warmingUp=[node1,node3] → quorum writes.
+	// node2 excluded (ShuttingDown); no ACTIVE nodes → WARMING_UP nodes [node1,node3] used as read fallback.
 	mockReplicationFSM.EXPECT().
-		FilterOneShardReplicasRead("TestClass", "shard1", []string(nil)).
-		Return([]string(nil))
+		FilterOneShardReplicasRead("TestClass", "shard1", []string{"node1", "node3"}).
+		Return([]string{"node1", "node3"})
 	mockReplicationFSM.EXPECT().
 		FilterOneShardReplicasWrite("TestClass", "shard1", []string(nil)).
 		Return([]string(nil), []string(nil))
@@ -383,7 +385,7 @@ func TestPartitionByLifecycle_NodeAbsentFromMemberlist(t *testing.T) {
 	rs, ws, err := r.GetReadWriteReplicasLocation("TestClass", "", "shard1")
 
 	require.NoError(t, err)
-	require.Empty(t, rs.Replicas, "no reads served while all running nodes are WARMING_UP")
+	require.Len(t, rs.Replicas, 2, "WARMING_UP nodes serve as read fallback when no ACTIVE node exists")
 
 	// Both WARMING_UP nodes must land in the quorum write set (async ON but no ACTIVE nodes).
 	require.Len(t, ws.Replicas, 2, "WARMING_UP nodes must join quorum when no ACTIVE node is available")
