@@ -320,6 +320,21 @@ func partitionByLifecycle(nodeNames []string, nodeSelector cluster.NodeSelector)
 	return
 }
 
+// readCandidates returns the nodes eligible to serve reads.
+// ACTIVE nodes are preferred. If none exist (e.g. all nodes are still warming up),
+// WARMING_UP nodes are used as a fallback to avoid "no read replica found" failures
+// during cluster startup before lifecycle promotion completes.
+// SHUTTING_DOWN nodes are never used.
+func readCandidates(active, warmingUp []string) []string {
+	if len(active) > 0 {
+		return active
+	}
+	if len(warmingUp) > 0 {
+		return warmingUp
+	}
+	return active // both empty: preserve active's nil/[]string{} for caller
+}
+
 // asyncReplicationEnabled reports whether the collection has async replication turned on.
 // It is called only when warmingUp nodes are present, so it is off the hot path.
 // ReadOnlyClass reads from the local in-memory FSM snapshot — no network round-trip.
@@ -329,15 +344,16 @@ func asyncReplicationEnabled(schemaReader schema.SchemaReader, collection string
 }
 
 // readReplicasForShard gathers only read replicas for one shard.
-// WARMING_UP and SHUTTING_DOWN nodes are excluded: they are not ready to serve consistent reads.
+// ACTIVE nodes are preferred; WARMING_UP nodes are used as fallback if no ACTIVE nodes exist.
+// SHUTTING_DOWN nodes are never used.
 func (r *singleTenantRouter) readReplicasForShard(collection, tenant, shard string) ([]types.Replica, error) {
 	replicas, err := r.schemaReader.ShardReplicas(collection, shard)
 	if err != nil {
 		return nil, fmt.Errorf("error while getting replicas for collection %q shard %q: %w", collection, shard, err)
 	}
 
-	activeReplicas, _ := partitionByLifecycle(replicas, r.nodeSelector)
-	readNodeNames := r.replicationFSMReader.FilterOneShardReplicasRead(collection, shard, activeReplicas)
+	active, warmingUp := partitionByLifecycle(replicas, r.nodeSelector)
+	readNodeNames := r.replicationFSMReader.FilterOneShardReplicasRead(collection, shard, readCandidates(active, warmingUp))
 	return buildReplicas(readNodeNames, shard, r.nodeSelector.NodeHostname), nil
 }
 
@@ -540,8 +556,8 @@ func (r *multiTenantRouter) getReadReplicasLocation(collection string, tenant, s
 		return types.ReadReplicaSet{}, err
 	}
 
-	activeReplicas, _ := partitionByLifecycle(replicas, r.nodeSelector)
-	readNodeNames := r.replicationFSMReader.FilterOneShardReplicasRead(collection, shard, activeReplicas)
+	active, warmingUp := partitionByLifecycle(replicas, r.nodeSelector)
+	readNodeNames := r.replicationFSMReader.FilterOneShardReplicasRead(collection, shard, readCandidates(active, warmingUp))
 	readReplicas := buildReplicas(readNodeNames, shard, r.nodeSelector.NodeHostname)
 
 	return types.ReadReplicaSet{Replicas: readReplicas}, nil

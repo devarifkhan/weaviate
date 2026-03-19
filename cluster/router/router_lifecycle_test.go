@@ -299,6 +299,34 @@ func TestPartitionByLifecycle_WriteReplicaSetDirectly(t *testing.T) {
 	}
 }
 
+// TestPartitionByLifecycle_AllWarmingUpFallback verifies that when no ACTIVE nodes exist,
+// WARMING_UP nodes are used as a read fallback to prevent "no read replica found" failures
+// during cluster startup before lifecycle promotion completes.
+func TestPartitionByLifecycle_AllWarmingUpFallback(t *testing.T) {
+	mockSchemaReader := schema.NewMockSchemaReader(t)
+	mockReplicationFSM := replicationTypes.NewMockReplicationFSMReader(t)
+	mockNodeSelector := ucluster.NewMockNodeSelector(t)
+
+	mockNodeSelector.EXPECT().NodeLifecycle("node1").Return(ucluster.NodeLifecycleWarmingUp)
+	mockNodeSelector.EXPECT().NodeLifecycle("node2").Return(ucluster.NodeLifecycleWarmingUp)
+	mockNodeSelector.EXPECT().NodeHostname(mock.Anything).Return("", true).Maybe()
+
+	state := createShardingStateWithShards([]string{"shard1"})
+	mockSchemaReader.EXPECT().Shards(mock.Anything).Return(state.AllPhysicalShards(), nil).Maybe()
+	mockSchemaReader.EXPECT().ShardReplicas("TestClass", "shard1").Return([]string{"node1", "node2"}, nil)
+
+	// Fallback: both WARMING_UP nodes are passed to FSM for reads.
+	mockReplicationFSM.EXPECT().
+		FilterOneShardReplicasRead("TestClass", "shard1", []string{"node1", "node2"}).
+		Return([]string{"node1", "node2"})
+
+	r := router.NewBuilder("TestClass", false, mockNodeSelector, nil, mockSchemaReader, mockReplicationFSM).Build()
+	rs, err := r.GetReadReplicasLocation("TestClass", "", "shard1")
+
+	require.NoError(t, err)
+	require.Len(t, rs.Replicas, 2, "WARMING_UP nodes must be used as fallback when no ACTIVE nodes exist")
+}
+
 func replicaNames(replicas []types.Replica) []string {
 	names := make([]string, len(replicas))
 	for i, r := range replicas {
