@@ -342,6 +342,55 @@ func TestPartitionByLifecycle_AllWarmingUpRead(t *testing.T) {
 	require.Len(t, rs.Replicas, 2, "all WARMING_UP nodes should be readable")
 }
 
+// TestPartitionByLifecycle_NodeAbsentFromMemberlist reproduces the race during startup where:
+//   - All running nodes are still WARMING_UP (lifecycle promoter has not yet fired)
+//   - One node has been stopped and left the memberlist (NodeLifecycle returns ShuttingDown)
+//
+// Before the fix, NodeLifecycle returned Active for absent nodes.  That caused the absent
+// node to be the sole "active" replica passed to FilterOneShardReplicasWrite; buildReplicas
+// then failed to resolve its hostname, producing an empty write set and
+// "cannot reach enough replicas" for consistency ONE.
+//
+// After the fix, absent nodes are treated as ShuttingDown (excluded).  The two running
+// WARMING_UP nodes fall through to the else branch and both end up in the quorum write set,
+// so the write succeeds regardless of whether async replication is enabled.
+func TestPartitionByLifecycle_NodeAbsentFromMemberlist(t *testing.T) {
+	mockSchemaReader := schema.NewMockSchemaReader(t)
+	mockReplicationFSM := replicationTypes.NewMockReplicationFSMReader(t)
+	mockNodeSelector := ucluster.NewMockNodeSelector(t)
+
+	// node1 and node3 are running but still WARMING_UP (lifecycle promoter hasn't fired).
+	// node2 was stopped and left the memberlist → ShuttingDown.
+	mockNodeSelector.EXPECT().NodeLifecycle("node1").Return(ucluster.NodeLifecycleWarmingUp)
+	mockNodeSelector.EXPECT().NodeLifecycle("node2").Return(ucluster.NodeLifecycleShuttingDown)
+	mockNodeSelector.EXPECT().NodeLifecycle("node3").Return(ucluster.NodeLifecycleWarmingUp)
+	mockNodeSelector.EXPECT().NodeHostname(mock.Anything).Return("", true).Maybe()
+
+	mockSchemaReader.EXPECT().ReadOnlyClass("TestClass").Return(classWithAsync(true))
+
+	state := createShardingStateWithShards([]string{"shard1"})
+	mockSchemaReader.EXPECT().Shards(mock.Anything).Return(state.AllPhysicalShards(), nil).Maybe()
+	mockSchemaReader.EXPECT().ShardReplicas("TestClass", "shard1").Return([]string{"node1", "node2", "node3"}, nil).Times(2)
+
+	// node2 is excluded (ShuttingDown); active set passed to FSM is empty.
+	mockReplicationFSM.EXPECT().
+		FilterOneShardReplicasRead("TestClass", "shard1", []string{"node1", "node3"}).
+		Return([]string{"node1", "node3"})
+	mockReplicationFSM.EXPECT().
+		FilterOneShardReplicasWrite("TestClass", "shard1", []string(nil)).
+		Return([]string(nil), []string(nil))
+
+	r := router.NewBuilder("TestClass", false, mockNodeSelector, nil, mockSchemaReader, mockReplicationFSM).Build()
+	rs, ws, err := r.GetReadWriteReplicasLocation("TestClass", "", "shard1")
+
+	require.NoError(t, err)
+	require.Len(t, rs.Replicas, 2, "WARMING_UP nodes should be readable; absent node excluded")
+
+	// Both WARMING_UP nodes must land in the quorum write set (async ON but no ACTIVE nodes).
+	require.Len(t, ws.Replicas, 2, "WARMING_UP nodes must join quorum when no ACTIVE node is available")
+	require.Empty(t, ws.AdditionalReplicas)
+}
+
 func replicaNames(replicas []types.Replica) []string {
 	names := make([]string, len(replicas))
 	for i, r := range replicas {

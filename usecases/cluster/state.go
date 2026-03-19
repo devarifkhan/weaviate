@@ -58,7 +58,9 @@ type NodeSelector interface {
 	// Shutdown called when leaves the cluster gracefully and shuts down the memberlist instance
 	Shutdown() error
 	// NodeLifecycle returns the lifecycle state of the named node as gossipped via memberlist metadata.
-	// Returns NodeLifecycleActive when metadata is unavailable, to preserve backward compatibility with old nodes.
+	// Returns NodeLifecycleActive for nodes present in the memberlist but without lifecycle metadata
+	// (backward compatibility with old nodes). Returns NodeLifecycleShuttingDown for nodes absent
+	// from the memberlist, so they are excluded from routing.
 	NodeLifecycle(nodeName string) NodeLifecycle
 	// SetNodeLifecycle updates this node's lifecycle state and re-gossips it to peers immediately.
 	SetNodeLifecycle(lc NodeLifecycle) error
@@ -421,8 +423,11 @@ func (s *State) NodeHostname(nodeName string) (string, bool) {
 }
 
 // NodeLifecycle returns the lifecycle state gossipped by the named node via memberlist metadata.
-// Returns NodeLifecycleActive for unknown nodes or nodes running older software without the lifecycle field,
+// Returns NodeLifecycleActive for nodes running older software without the lifecycle field,
 // preserving backward compatibility.
+// Returns NodeLifecycleShuttingDown for nodes absent from the memberlist: if we cannot see a
+// node in the live member view it is unreachable (stopped, partitioned, or not yet joined),
+// so excluding it from routing is safer than treating it as a healthy ACTIVE node.
 func (s *State) NodeLifecycle(nodeName string) NodeLifecycle {
 	for _, mem := range s.list.Members() {
 		if mem.Name == nodeName {
@@ -433,7 +438,7 @@ func (s *State) NodeLifecycle(nodeName string) NodeLifecycle {
 			return meta.Lifecycle
 		}
 	}
-	return NodeLifecycleActive
+	return NodeLifecycleShuttingDown
 }
 
 // SetNodeLifecycle updates this node's lifecycle state in memberlist and immediately re-gossips it to peers.
