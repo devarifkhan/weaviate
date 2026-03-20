@@ -695,7 +695,7 @@ func TestSingleTenantRouter_BuildReadRoutingPlan_NoReplicas(t *testing.T) {
 	rs, err := r.GetReadReplicasLocation("TestClass", "", "shard1")
 
 	require.NoError(t, err)
-	require.Equal(t, []types.Replica(nil), rs.Replicas)
+	require.Empty(t, rs.Replicas)
 }
 
 func TestMultiTenantRouter_BuildReadRoutingPlan_NoReplicas(t *testing.T) {

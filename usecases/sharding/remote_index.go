@@ -34,6 +34,7 @@ import (
 	"github.com/weaviate/weaviate/entities/searchparams"
 	"github.com/weaviate/weaviate/entities/storobj"
 	"github.com/weaviate/weaviate/usecases/file"
+	ucluster "github.com/weaviate/weaviate/usecases/cluster"
 	"github.com/weaviate/weaviate/usecases/objects"
 )
 
@@ -64,6 +65,26 @@ func NewRemoteIndex(className string,
 
 type nodeResolver interface {
 	NodeHostname(nodeName string) (string, bool)
+	NodeLifecycle(nodeName string) ucluster.NodeLifecycle
+}
+
+// readableReplicas filters a replica list to only include nodes suitable for reads.
+// ACTIVE nodes are preferred; WARMING_UP nodes are used as fallback if no ACTIVE node exists.
+// SHUTTING_DOWN nodes are always excluded.
+func (ri *RemoteIndex) readableReplicas(replicas []string) []string {
+	var active, warmingUp []string
+	for _, name := range replicas {
+		switch ri.nodeResolver.NodeLifecycle(name) {
+		case ucluster.NodeLifecycleActive:
+			active = append(active, name)
+		case ucluster.NodeLifecycleWarmingUp:
+			warmingUp = append(warmingUp, name)
+		}
+	}
+	if len(active) > 0 {
+		return active
+	}
+	return warmingUp
 }
 
 type RemoteIndexClient interface {
@@ -436,9 +457,13 @@ func (ri *RemoteIndex) queryAllReplicas(
 	do func(nodeName, host string) (ReplicasSearchResult, error),
 	localNode string,
 ) (resp []ReplicasSearchResult, err error) {
-	replicas, err := ri.stateGetter.ShardReplicas(ri.class, shard)
-	if err != nil || len(replicas) == 0 {
+	allReplicas, err := ri.stateGetter.ShardReplicas(ri.class, shard)
+	if err != nil || len(allReplicas) == 0 {
 		return nil, fmt.Errorf("class %q has no physical shard %q: %w", ri.class, shard, err)
+	}
+	replicas := ri.readableReplicas(allReplicas)
+	if len(replicas) == 0 {
+		return nil, fmt.Errorf("class %q shard %q has no active replicas", ri.class, shard)
 	}
 
 	queryOne := func(replica string) (ReplicasSearchResult, error) {
@@ -511,11 +536,15 @@ func (ri *RemoteIndex) queryReplicas(
 	shard string,
 	do func(nodeName, host string) (interface{}, error),
 ) (resp interface{}, node string, err error) {
-	replicas, err := ri.stateGetter.ShardReplicas(ri.class, shard)
-	if err != nil || len(replicas) == 0 {
+	allReplicas, err := ri.stateGetter.ShardReplicas(ri.class, shard)
+	if err != nil || len(allReplicas) == 0 {
 		return nil,
 			"",
 			fmt.Errorf("class %q has no physical shard %q: %w", ri.class, shard, err)
+	}
+	replicas := ri.readableReplicas(allReplicas)
+	if len(replicas) == 0 {
+		return nil, "", fmt.Errorf("class %q shard %q has no active replicas", ri.class, shard)
 	}
 
 	queryOne := func(replica string) (interface{}, error) {

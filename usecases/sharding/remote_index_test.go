@@ -16,6 +16,8 @@ import (
 	"errors"
 	"fmt"
 	"testing"
+
+	ucluster "github.com/weaviate/weaviate/usecases/cluster"
 )
 
 var errAny = errors.New("anyErr")
@@ -109,6 +111,10 @@ func (r *fakeNodeResolver) AllHostnames() []string {
 func (f *fakeNodeResolver) NodeHostname(name string) (string, bool) {
 	host, ok := f.rTable[name]
 	return host, ok
+}
+
+func (f *fakeNodeResolver) NodeLifecycle(name string) ucluster.NodeLifecycle {
+	return ucluster.NodeLifecycleActive
 }
 
 type fakeSchema struct {
