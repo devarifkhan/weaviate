@@ -43,6 +43,7 @@ func TestProperties_SingleNode(t *testing.T) {
 	t.Run("delete property's index multi-tenant", testDeletePropertyIndexMultiTenant(compose))
 	t.Run("delete property's index", testDeletePropertyIndex(compose))
 	t.Run("drop vector index", testDropVectorIndex(compose))
+	t.Run("drop vector index multi-tenant", testDropVectorIndexMultiTenant(compose))
 }
 
 func TestProperties_Cluster(t *testing.T) {
@@ -63,4 +64,5 @@ func TestProperties_Cluster(t *testing.T) {
 	t.Run("delete property's index multi-tenant", testDeletePropertyIndexMultiTenant(nil))
 	t.Run("delete property's index", testDeletePropertyIndex(nil))
 	t.Run("drop vector index", testDropVectorIndex(nil))
+	t.Run("drop vector index multi-tenant", testDropVectorIndexMultiTenant(nil))
 }
