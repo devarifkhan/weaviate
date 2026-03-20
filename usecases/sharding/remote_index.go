@@ -209,17 +209,14 @@ func (ri *RemoteIndex) BatchAddReferences(ctx context.Context, shardName string,
 func (ri *RemoteIndex) Exists(ctx context.Context, shardName string,
 	id strfmt.UUID,
 ) (bool, error) {
-	owner, err := ri.stateGetter.ShardOwner(ri.class, shardName)
+	f := func(_, host string) (interface{}, error) {
+		return ri.client.Exists(ctx, host, ri.class, shardName, id)
+	}
+	rr, _, err := ri.queryReplicas(ctx, shardName, f)
 	if err != nil {
-		return false, fmt.Errorf("class %s has no physical shard %q: %w", ri.class, shardName, err)
+		return false, err
 	}
-
-	host, ok := ri.nodeResolver.NodeHostname(owner)
-	if !ok {
-		return false, fmt.Errorf("resolve node name %q to host", owner)
-	}
-
-	return ri.client.Exists(ctx, host, ri.class, shardName, id)
+	return rr.(bool), nil
 }
 
 func (ri *RemoteIndex) DeleteObject(ctx context.Context, shardName string,
@@ -258,33 +255,27 @@ func (ri *RemoteIndex) GetObject(ctx context.Context, shardName string,
 	id strfmt.UUID, props search.SelectProperties,
 	additional additional.Properties,
 ) (*storobj.Object, error) {
-	owner, err := ri.stateGetter.ShardOwner(ri.class, shardName)
+	f := func(_, host string) (interface{}, error) {
+		return ri.client.GetObject(ctx, host, ri.class, shardName, id, props, additional)
+	}
+	rr, _, err := ri.queryReplicas(ctx, shardName, f)
 	if err != nil {
-		return nil, fmt.Errorf("class %s has no physical shard %q: %w", ri.class, shardName, err)
+		return nil, err
 	}
-
-	host, ok := ri.nodeResolver.NodeHostname(owner)
-	if !ok {
-		return nil, fmt.Errorf("resolve node name %q to host", owner)
-	}
-
-	return ri.client.GetObject(ctx, host, ri.class, shardName, id, props, additional)
+	return rr.(*storobj.Object), nil
 }
 
 func (ri *RemoteIndex) MultiGetObjects(ctx context.Context, shardName string,
 	ids []strfmt.UUID,
 ) ([]*storobj.Object, error) {
-	owner, err := ri.stateGetter.ShardOwner(ri.class, shardName)
+	f := func(_, host string) (interface{}, error) {
+		return ri.client.MultiGetObjects(ctx, host, ri.class, shardName, ids)
+	}
+	rr, _, err := ri.queryReplicas(ctx, shardName, f)
 	if err != nil {
-		return nil, fmt.Errorf("class %s has no physical shard %q: %w", ri.class, shardName, err)
+		return nil, err
 	}
-
-	host, ok := ri.nodeResolver.NodeHostname(owner)
-	if !ok {
-		return nil, fmt.Errorf("resolve node name %q to host", owner)
-	}
-
-	return ri.client.MultiGetObjects(ctx, host, ri.class, shardName, ids)
+	return rr.([]*storobj.Object), nil
 }
 
 type ReplicasSearchResult struct {
@@ -377,17 +368,14 @@ func (ri *RemoteIndex) Aggregate(
 func (ri *RemoteIndex) FindUUIDs(ctx context.Context, shardName string,
 	filters *filters.LocalFilter,
 ) ([]strfmt.UUID, error) {
-	owner, err := ri.stateGetter.ShardOwner(ri.class, shardName)
+	f := func(_, host string) (interface{}, error) {
+		return ri.client.FindUUIDs(ctx, host, ri.class, shardName, filters)
+	}
+	rr, _, err := ri.queryReplicas(ctx, shardName, f)
 	if err != nil {
-		return nil, fmt.Errorf("class %s has no physical shard %q: %w", ri.class, shardName, err)
+		return nil, err
 	}
-
-	host, ok := ri.nodeResolver.NodeHostname(owner)
-	if !ok {
-		return nil, fmt.Errorf("resolve node name %q to host", owner)
-	}
-
-	return ri.client.FindUUIDs(ctx, host, ri.class, shardName, filters)
+	return rr.([]strfmt.UUID), nil
 }
 
 func (ri *RemoteIndex) DeleteObjectBatch(ctx context.Context, shardName string,
