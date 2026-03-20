@@ -65,6 +65,7 @@ import (
 	esync "github.com/weaviate/weaviate/entities/sync"
 	"github.com/weaviate/weaviate/entities/tokenizer"
 	authzerrors "github.com/weaviate/weaviate/usecases/auth/authorization/errors"
+	"github.com/weaviate/weaviate/usecases/cluster"
 	"github.com/weaviate/weaviate/usecases/config"
 	configRuntime "github.com/weaviate/weaviate/usecases/config/runtime"
 	"github.com/weaviate/weaviate/usecases/dynsemaphore"
@@ -308,6 +309,7 @@ func (i *Index) path() string {
 type nodeResolver interface {
 	AllHostnames() []string
 	NodeHostname(nodeName string) (string, bool)
+	NodeLifecycle(nodeName string) cluster.NodeLifecycle
 }
 
 // NewIndex creates an index with the specified amount of shards, using only
