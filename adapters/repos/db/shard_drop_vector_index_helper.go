@@ -19,6 +19,7 @@ import (
 
 	"github.com/weaviate/weaviate/adapters/repos/db/helpers"
 	"github.com/weaviate/weaviate/entities/models"
+	"github.com/weaviate/weaviate/entities/modelsext"
 )
 
 type vectorDropIndexHelper struct{}
@@ -35,9 +36,14 @@ func newVectorDropIndexHelper() *vectorDropIndexHelper {
 func (h *vectorDropIndexHelper) ensureFilesAreRemovedForDroppedVectorIndexes(
 	indexPath, shardName string, class *models.Class,
 ) error {
+	// Build a set of vectors that still have an active index configuration.
+	// Vectors with dropped indexes (empty VectorIndexType) are excluded so
+	// their files get cleaned up.
 	configuredVectors := make(map[string]struct{}, len(class.VectorConfig))
-	for name := range class.VectorConfig {
-		configuredVectors[name] = struct{}{}
+	for name, cfg := range class.VectorConfig {
+		if !modelsext.IsVectorIndexDropped(cfg) {
+			configuredVectors[name] = struct{}{}
+		}
 	}
 
 	orphaned, err := h.findOrphanedVectorNames(indexPath, shardName, configuredVectors)

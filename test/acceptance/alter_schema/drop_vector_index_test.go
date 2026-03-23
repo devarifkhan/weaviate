@@ -202,10 +202,14 @@ func testDropVectorIndex(compose *docker.DockerCompose) func(t *testing.T) {
 					helper.AssertRequestOk(t, resp, err, nil)
 				})
 
-				t.Run("verify vector removed from schema", func(t *testing.T) {
+				t.Run("verify vector index dropped in schema", func(t *testing.T) {
 					cls := helper.GetClass(t, className)
-					_, ok := cls.VectorConfig[tc.name]
-					assert.False(t, ok, "vector config %q should have been removed", tc.name)
+					cfg, ok := cls.VectorConfig[tc.name]
+					assert.True(t, ok, "vector config %q should still exist in schema", tc.name)
+					if ok {
+						assert.Empty(t, cfg.VectorIndexType, "VectorIndexType should be empty for dropped index %q", tc.name)
+						assert.Nil(t, cfg.VectorIndexConfig, "VectorIndexConfig should be nil for dropped index %q", tc.name)
+					}
 				})
 
 				if compose != nil {
@@ -232,10 +236,19 @@ func testDropVectorIndex(compose *docker.DockerCompose) func(t *testing.T) {
 			})
 		}
 
-		// After dropping all 4, verify the class has no vectors configured.
+		// After dropping all 4, verify the class still has all vector entries
+		// but with dropped (empty) index configuration.
 		t.Run("verify schema after all drops", func(t *testing.T) {
 			cls := helper.GetClass(t, className)
-			assert.Empty(t, cls.VectorConfig)
+			require.Len(t, cls.VectorConfig, 4)
+			for _, name := range []string{"hnsw", "hnsw_rq8", "flat", "flat_rq1"} {
+				cfg, ok := cls.VectorConfig[name]
+				assert.True(t, ok, "vector config %q should still exist", name)
+				if ok {
+					assert.Empty(t, cfg.VectorIndexType, "VectorIndexType should be empty for %q", name)
+					assert.Nil(t, cfg.VectorIndexConfig, "VectorIndexConfig should be nil for %q", name)
+				}
+			}
 		})
 
 		// Clean up.

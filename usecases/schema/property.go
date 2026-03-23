@@ -18,6 +18,7 @@ import (
 
 	clusterSchema "github.com/weaviate/weaviate/cluster/schema"
 	"github.com/weaviate/weaviate/entities/models"
+	"github.com/weaviate/weaviate/entities/modelsext"
 	"github.com/weaviate/weaviate/entities/schema"
 	"github.com/weaviate/weaviate/usecases/auth/authorization"
 )
@@ -176,14 +177,23 @@ func (h *Handler) DeleteClassVectorIndex(ctx context.Context, principal *models.
 		return fmt.Errorf("class %q has no named vector configurations", className)
 	}
 
-	if _, exists := class.VectorConfig[vectorIndexName]; !exists {
+	cfg, exists := class.VectorConfig[vectorIndexName]
+	if !exists {
 		return fmt.Errorf("vector index %q not found in class %q: %w", vectorIndexName, className, ErrNotFound)
 	}
 
-	// Remove the vector config from the class and persist via RAFT.
-	// The executor's UpdateClass will detect the removed config and
-	// call the migrator to drop the vector index from disk.
-	delete(class.VectorConfig, vectorIndexName)
+	if modelsext.IsVectorIndexDropped(cfg) {
+		// Already dropped, nothing to do.
+		return nil
+	}
+
+	// Keep the vector entry in the schema but clear the index configuration.
+	// This signals that the vector data still exists in the objects bucket but
+	// the search index has been removed. The executor's UpdateClass will detect
+	// the cleared config and call the migrator to drop the index from disk.
+	class.VectorConfig[vectorIndexName] = models.VectorConfig{
+		Vectorizer: cfg.Vectorizer,
+	}
 
 	_, err := h.schemaManager.UpdateClass(ctx, class, nil)
 	return err

@@ -175,7 +175,15 @@ func testDropVectorIndexMultiTenant(compose *docker.DockerCompose) func(t *testi
 
 		t.Run("verify schema after drops", func(t *testing.T) {
 			cls := helper.GetClass(t, className)
-			assert.Empty(t, cls.VectorConfig)
+			require.Len(t, cls.VectorConfig, 2)
+			for _, name := range []string{"flat_bq", "hnsw_rq8"} {
+				cfg, ok := cls.VectorConfig[name]
+				assert.True(t, ok, "vector config %q should still exist", name)
+				if ok {
+					assert.Empty(t, cfg.VectorIndexType, "VectorIndexType should be empty for %q", name)
+					assert.Nil(t, cfg.VectorIndexConfig, "VectorIndexConfig should be nil for %q", name)
+				}
+			}
 		})
 
 		if compose != nil {

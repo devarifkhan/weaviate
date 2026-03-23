@@ -246,8 +246,8 @@ func TestVectorDropIndexHelper_EnsureFilesAreRemovedForDroppedVectorIndexes(t *t
 		class := &models.Class{
 			Class: "TestClass",
 			VectorConfig: map[string]models.VectorConfig{
-				"flat_bq":  {},
-				"hnsw_rq8": {},
+				"flat_bq":  {VectorIndexType: "flat"},
+				"hnsw_rq8": {VectorIndexType: "hnsw"},
 			},
 		}
 
@@ -260,10 +260,10 @@ func TestVectorDropIndexHelper_EnsureFilesAreRemovedForDroppedVectorIndexes(t *t
 		assert.True(t, pathExists(filepath.Join(indexPath, shardName, "vectors_hnsw_rq8.hnsw.commitlog.d")))
 	})
 
-	t.Run("dropped vector - all files removed", func(t *testing.T) {
+	t.Run("dropped vector (nil config) - files removed", func(t *testing.T) {
 		indexPath, shardName := setup(t)
 
-		// flat_bq is dropped, hnsw_rq8 is still configured
+		// flat_bq is dropped (empty VectorIndexType), hnsw_rq8 is still configured
 		createLSMBucket(t, indexPath, shardName, "vectors_flat_bq")
 		createLSMBucket(t, indexPath, shardName, "vectors_compressed_flat_bq")
 		createLSMBucket(t, indexPath, shardName, "vectors_hnsw_rq8")
@@ -272,18 +272,19 @@ func TestVectorDropIndexHelper_EnsureFilesAreRemovedForDroppedVectorIndexes(t *t
 		class := &models.Class{
 			Class: "TestClass",
 			VectorConfig: map[string]models.VectorConfig{
-				"hnsw_rq8": {},
+				"flat_bq":  {},
+				"hnsw_rq8": {VectorIndexType: "hnsw"},
 			},
 		}
 
 		err := h.ensureFilesAreRemovedForDroppedVectorIndexes(indexPath, shardName, class)
 		require.NoError(t, err)
 
-		// flat_bq files should be removed
+		// flat_bq files should be removed (dropped)
 		assert.False(t, pathExists(filepath.Join(indexPath, shardName, "lsm", "vectors_flat_bq")))
 		assert.False(t, pathExists(filepath.Join(indexPath, shardName, "lsm", "vectors_compressed_flat_bq")))
 
-		// hnsw_rq8 files should still exist
+		// hnsw_rq8 files should still exist (active)
 		assert.True(t, pathExists(filepath.Join(indexPath, shardName, "lsm", "vectors_hnsw_rq8")))
 		assert.True(t, pathExists(filepath.Join(indexPath, shardName, "vectors_hnsw_rq8.hnsw.commitlog.d")))
 	})
@@ -298,8 +299,11 @@ func TestVectorDropIndexHelper_EnsureFilesAreRemovedForDroppedVectorIndexes(t *t
 		createShardDir(t, indexPath, shardName, "vectors_hnsw_rq8.hnsw.snapshot.d")
 
 		class := &models.Class{
-			Class:        "TestClass",
-			VectorConfig: map[string]models.VectorConfig{},
+			Class: "TestClass",
+			VectorConfig: map[string]models.VectorConfig{
+				"flat_bq":  {},
+				"hnsw_rq8": {},
+			},
 		}
 
 		err := h.ensureFilesAreRemovedForDroppedVectorIndexes(indexPath, shardName, class)
@@ -320,8 +324,10 @@ func TestVectorDropIndexHelper_EnsureFilesAreRemovedForDroppedVectorIndexes(t *t
 		createLSMBucket(t, indexPath, shardName, "vectors_dropped")
 
 		class := &models.Class{
-			Class:        "TestClass",
-			VectorConfig: map[string]models.VectorConfig{},
+			Class: "TestClass",
+			VectorConfig: map[string]models.VectorConfig{
+				"dropped": {},
+			},
 		}
 
 		err := h.ensureFilesAreRemovedForDroppedVectorIndexes(indexPath, shardName, class)

@@ -24,6 +24,7 @@ import (
 	"github.com/weaviate/weaviate/cluster/proto/api"
 	enterrors "github.com/weaviate/weaviate/entities/errors"
 	"github.com/weaviate/weaviate/entities/models"
+	"github.com/weaviate/weaviate/entities/modelsext"
 	"github.com/weaviate/weaviate/entities/schema"
 	schemaConfig "github.com/weaviate/weaviate/entities/schema/config"
 )
@@ -168,11 +169,13 @@ func (e *executor) UpdateClass(req api.UpdateClassRequest) error {
 		}
 	}
 
-	// Detect vector configs that were removed from the class and drop them.
-	// We read the current vector index names from the DB layer (not the schema,
-	// which has already been updated by this point in the RAFT apply flow).
+	// Detect vector configs that have been dropped (VectorIndexType cleared)
+	// and drop the corresponding indexes from disk. We read the current vector
+	// index names from the DB layer (not the schema, which has already been
+	// updated by this point in the RAFT apply flow).
 	for _, targetVector := range e.migrator.GetVectorIndexNames(className) {
-		if _, stillExists := req.Class.VectorConfig[targetVector]; !stillExists {
+		cfg, exists := req.Class.VectorConfig[targetVector]
+		if !exists || modelsext.IsVectorIndexDropped(cfg) {
 			if err := e.migrator.DropVectorIndex(ctx, className, targetVector); err != nil {
 				return fmt.Errorf("drop vector index %q: %w", targetVector, err)
 			}
