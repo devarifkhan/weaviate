@@ -108,7 +108,15 @@ type AsyncReplicationConfig struct {
 	initShieldCPUEveryN int
 }
 
-func (s *Shard) initAsyncReplication(config AsyncReplicationConfig) (err error) {
+// initAsyncReplication initialises async-replication state for the shard.
+// It must be called while holding asyncReplicationRWMux for writing.
+//
+// If the function loaded a cached hashtree from disk it returns a non-nil
+// afterRelease callback.  The caller MUST invoke afterRelease() after
+// releasing asyncReplicationRWMux; calling it while the lock is still held
+// would deadlock (the hashbeater trigger goroutine blocks on an unbuffered
+// channel send, and object-write goroutines wait on the same lock).
+func (s *Shard) initAsyncReplication(config AsyncReplicationConfig) (afterRelease func(), err error) {
 	bucket := s.store.Bucket(helpers.ObjectsBucketLSM)
 
 	ctx, cancelFunc := context.WithCancel(context.Background())
@@ -126,13 +134,13 @@ func (s *Shard) initAsyncReplication(config AsyncReplicationConfig) (err error) 
 	start := time.Now()
 
 	if err := os.MkdirAll(s.pathHashTree(), os.ModePerm); err != nil {
-		return err
+		return nil, err
 	}
 
 	// load the most recent hashtree file
 	dirEntries, err := os.ReadDir(s.pathHashTree())
 	if err != nil {
-		return err
+		return nil, err
 	}
 
 	for i := len(dirEntries) - 1; i >= 0; i-- {
@@ -176,16 +184,16 @@ func (s *Shard) initAsyncReplication(config AsyncReplicationConfig) (err error) 
 
 		err = f.Close()
 		if err != nil {
-			return err
+			return nil, err
 		}
 
 		err = os.Remove(hashtreeFilename)
 		if err != nil {
-			return err
+			return nil, err
 		}
 
 		if err := diskio.Fsync(s.pathHashTree()); err != nil {
-			return fmt.Errorf("fsync hashtree directory %q: %w", s.pathHashTree(), err)
+			return nil, fmt.Errorf("fsync hashtree directory %q: %w", s.pathHashTree(), err)
 		}
 
 		if s.hashtree != nil && s.hashtree.Height() != config.hashtreeHeight {
@@ -203,13 +211,24 @@ func (s *Shard) initAsyncReplication(config AsyncReplicationConfig) (err error) 
 			WithField("took", fmt.Sprintf("%v", time.Since(start))).
 			Info("hashtree successfully initialized")
 
-		s.initHashBeater(ctx, config)
-		return nil
+		// Set hashbeatNotifyCh now while we already hold the write lock.
+		// We must NOT call initHashBeater here: initHashBeater tries to
+		// re-acquire the write lock and would deadlock (initAsyncReplication
+		// is always invoked while the caller holds asyncReplicationRWMux).
+		// Instead, return a callback that the caller must invoke after
+		// releasing the lock.
+		propagationRequired := make(chan struct{})
+		s.hashbeatNotifyCh = propagationRequired
+		capturedCtx := ctx
+		capturedConfig := config
+		return func() {
+			s.startHashbeaterGoroutines(capturedCtx, capturedConfig, propagationRequired)
+		}, nil
 	}
 
 	s.hashtree, err = hashtree.NewHashTree(config.hashtreeHeight)
 	if err != nil {
-		return err
+		return nil, err
 	}
 
 	s.hashtreeFullyInitialized = false
@@ -250,7 +269,7 @@ func (s *Shard) initAsyncReplication(config AsyncReplicationConfig) (err error) 
 		}
 	}, s.index.logger)
 
-	return nil
+	return nil, nil
 }
 
 func (s *Shard) initHashtree(ctx context.Context, config AsyncReplicationConfig, bucket *lsmkv.Bucket) (err error) {
@@ -436,40 +455,53 @@ func (s *Shard) mayStopAsyncReplication() {
 }
 
 func (s *Shard) SetAsyncReplicationState(_ context.Context, config AsyncReplicationConfig, enabled bool) error {
-	s.asyncReplicationRWMux.Lock()
-	defer s.asyncReplicationRWMux.Unlock()
+	var afterRelease func()
 
-	if enabled {
-		if s.hashtree != nil {
+	err := func() error {
+		s.asyncReplicationRWMux.Lock()
+		defer s.asyncReplicationRWMux.Unlock()
+
+		if enabled {
+			if s.hashtree != nil {
+				return nil
+			}
+			var err error
+			afterRelease, err = s.initAsyncReplication(config)
+			return err
+		}
+
+		if s.hashtree == nil {
 			return nil
 		}
 
-		return s.initAsyncReplication(config)
-	}
+		s.asyncReplicationCancelFunc()
 
-	if s.hashtree == nil {
+		if !s.hashtreeFullyInitialized && s.minimalHashtreeInitializationCh != nil {
+			// Unblock any goroutines blocking in waitForMinimalHashTreeInitialization.
+			s.minimalHashtreeInitializationOnce.Do(func() {
+				close(s.minimalHashtreeInitializationCh)
+			})
+		}
+
+		s.hashtree = nil
+		s.hashtreeFullyInitialized = false
+		s.hashbeatNotifyCh = nil
+		if bucket := s.store.Bucket(helpers.ObjectsBucketLSM); bucket != nil {
+			bucket.SetFlushCallback(nil)
+		}
+		s.asyncReplicationStatsMux.Lock()
+		s.asyncReplicationStatsByTargetNode = nil
+		s.asyncReplicationStatsMux.Unlock()
+
 		return nil
+	}()
+
+	if err != nil {
+		return err
 	}
-
-	s.asyncReplicationCancelFunc()
-
-	if !s.hashtreeFullyInitialized && s.minimalHashtreeInitializationCh != nil {
-		// Unblock any goroutines blocking in waitForMinimalHashTreeInitialization.
-		s.minimalHashtreeInitializationOnce.Do(func() {
-			close(s.minimalHashtreeInitializationCh)
-		})
+	if afterRelease != nil {
+		afterRelease()
 	}
-
-	s.hashtree = nil
-	s.hashtreeFullyInitialized = false
-	s.hashbeatNotifyCh = nil
-	if bucket := s.store.Bucket(helpers.ObjectsBucketLSM); bucket != nil {
-		bucket.SetFlushCallback(nil)
-	}
-	s.asyncReplicationStatsMux.Lock()
-	s.asyncReplicationStatsByTargetNode = nil
-	s.asyncReplicationStatsMux.Unlock()
-
 	return nil
 }
 
@@ -661,6 +693,19 @@ func (s *Shard) initHashBeater(ctx context.Context, config AsyncReplicationConfi
 	s.hashbeatNotifyCh = propagationRequired
 	s.asyncReplicationRWMux.Unlock()
 
+	s.startHashbeaterGoroutines(ctx, config, propagationRequired)
+}
+
+// startHashbeaterGoroutines starts the hashbeater and its trigger goroutine.
+// propagationRequired is the channel used to wake the hashbeater; it must
+// already be stored in s.hashbeatNotifyCh before calling this function.
+//
+// Must NOT be called while holding asyncReplicationRWMux: the trigger goroutine
+// immediately sends on the unbuffered propagationRequired channel, which blocks
+// until the hashbeater goroutine receives — holding the lock across that
+// scheduling point would stall every concurrent object-write and HashTreeLevel
+// RPC that acquires the read lock.
+func (s *Shard) startHashbeaterGoroutines(ctx context.Context, config AsyncReplicationConfig, propagationRequired chan struct{}) {
 	var lastHashbeat time.Time
 	var lastHashbeatPropagatedObjects bool
 	var lastHashbeatMux sync.Mutex

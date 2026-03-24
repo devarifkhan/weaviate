@@ -218,21 +218,21 @@ func TestReplicatedIndicesWorkQueue(t *testing.T) {
 			requestKey := fmt.Sprintf("%s=%s", replica.RequestKey, "test_request_id")
 			req, err := http.NewRequest("POST", fmt.Sprintf("%s/replicas/indices/MyClass/shards/myshard:commit?%s", server.URL, requestKey), nil)
 			assert.Nil(t, err)
-			wgAccepted := sync.WaitGroup{}
-			wgRejected := sync.WaitGroup{}
-			wgAccepted.Add(tc.expectedAccepted)
-			wgRejected.Add(tc.expectedRejected)
+			var wgAll sync.WaitGroup
+			wgAll.Add(tc.numRequests)
+			rejectedCh := make(chan struct{}, tc.numRequests)
 			httpStatuses := make(chan int, tc.numRequests)
 			for i := 0; i < tc.numRequests; i++ {
 				go func() {
+					defer wgAll.Done()
 					res, err := http.DefaultClient.Do(req.Clone(req.Context()))
 					assert.Nil(t, err)
 					defer res.Body.Close()
 					httpStatuses <- res.StatusCode
 					if res.StatusCode == http.StatusOK {
-						wgAccepted.Done()
+						// accepted — will be unblocked by close(commitBlock) below
 					} else if res.StatusCode == tc.requestQueueConfig.QueueFullHttpStatus {
-						wgRejected.Done()
+						rejectedCh <- struct{}{}
 					} else {
 						// unexpected status code received
 						fmt.Println("unexpected status code: ", res.StatusCode)
@@ -240,11 +240,12 @@ func TestReplicatedIndicesWorkQueue(t *testing.T) {
 					}
 				}()
 			}
-			wgRejected.Wait()
-			for i := 0; i < tc.expectedAccepted; i++ {
-				commitBlock <- struct{}{}
+			// Wait until we have seen enough rejections, then unblock all accepted requests
+			for i := 0; i < tc.expectedRejected; i++ {
+				<-rejectedCh
 			}
-			wgAccepted.Wait()
+			close(commitBlock)
+			wgAll.Wait()
 			close(httpStatuses)
 
 			actualAccepted := 0
