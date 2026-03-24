@@ -495,7 +495,6 @@ func (s *Shard) SetAsyncReplicationState(_ context.Context, config AsyncReplicat
 
 		return nil
 	}()
-
 	if err != nil {
 		return err
 	}
