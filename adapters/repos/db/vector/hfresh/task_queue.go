@@ -249,7 +249,7 @@ func (tq *TaskQueue) EnqueueAnalyze(postingID uint64) error {
 		return errors.Wrap(err, "failed to push analyze operation to queue")
 	}
 
-	tq.index.metrics.EnqueueAnalyzeTask()
+	tq.index.metrics.SetPendingAnalyzeTasks(tq.analyzeQueue.Size())
 	return nil
 }
 
@@ -263,7 +263,7 @@ func (tq *TaskQueue) EnqueueSplit(postingID uint64) error {
 		return errors.Wrap(err, "failed to push split operation to queue")
 	}
 
-	tq.index.metrics.EnqueueSplitTask()
+	tq.index.metrics.SetPendingSplitTasks(tq.splitQueue.Size())
 
 	return nil
 }
@@ -278,7 +278,7 @@ func (tq *TaskQueue) EnqueueMerge(postingID uint64) error {
 		return errors.Wrap(err, "failed to push merge operation to queue")
 	}
 
-	tq.index.metrics.EnqueueMergeTask()
+	tq.index.metrics.SetPendingMergeTasks(tq.mergeQueue.Size())
 
 	return nil
 }
@@ -293,7 +293,7 @@ func (tq *TaskQueue) EnqueueReassign(postingID uint64, vecID uint64, version Vec
 		return errors.Wrap(err, "failed to push reassign operation to queue")
 	}
 
-	tq.index.metrics.EnqueueReassignTask()
+	tq.index.metrics.SetPendingReassignTasks(tq.reassignQueue.Size())
 
 	return nil
 }

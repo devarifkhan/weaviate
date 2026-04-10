@@ -177,22 +177,6 @@ func (m *Metrics) ObservePostingSize(size float64) {
 	m.postingSize.Observe(size)
 }
 
-func (m *Metrics) EnqueueAnalyzeTask() {
-	if !m.enabled {
-		return
-	}
-
-	m.analyzePending.Inc()
-}
-
-func (m *Metrics) DequeueAnalyzeTask() {
-	if !m.enabled {
-		return
-	}
-
-	m.analyzePending.Dec()
-}
-
 func (m *Metrics) AnalyzeDuration(start time.Time) {
 	if !m.enabled {
 		return
@@ -215,22 +199,6 @@ func (m *Metrics) SetPendingAnalyzeTasks(count int64) {
 	}
 
 	m.analyzePending.Set(float64(count))
-}
-
-func (m *Metrics) EnqueueSplitTask() {
-	if !m.enabled {
-		return
-	}
-
-	m.splitsPending.Inc()
-}
-
-func (m *Metrics) DequeueSplitTask() {
-	if !m.enabled {
-		return
-	}
-
-	m.splitsPending.Dec()
 }
 
 func (m *Metrics) SplitDuration(start time.Time) {
@@ -257,22 +225,6 @@ func (m *Metrics) SetPendingSplitTasks(count int64) {
 	m.splitsPending.Set(float64(count))
 }
 
-func (m *Metrics) EnqueueMergeTask() {
-	if !m.enabled {
-		return
-	}
-
-	m.mergesPending.Inc()
-}
-
-func (m *Metrics) DequeueMergeTask() {
-	if !m.enabled {
-		return
-	}
-
-	m.mergesPending.Dec()
-}
-
 func (m *Metrics) MergeDuration(start time.Time) {
 	if !m.enabled {
 		return
@@ -295,22 +247,6 @@ func (m *Metrics) SetPendingMergeTasks(count int64) {
 	}
 
 	m.mergesPending.Set(float64(count))
-}
-
-func (m *Metrics) EnqueueReassignTask() {
-	if !m.enabled {
-		return
-	}
-
-	m.reassignsPending.Inc()
-}
-
-func (m *Metrics) DequeueReassignTask() {
-	if !m.enabled {
-		return
-	}
-
-	m.reassignsPending.Dec()
 }
 
 func (m *Metrics) ReassignDuration(start time.Time) {
