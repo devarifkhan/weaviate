@@ -372,7 +372,7 @@ func (t *AnalyzeTask) Execute(ctx context.Context) error {
 		return err
 	}
 
-	t.idx.metrics.DequeueAnalyzeTask()
+	t.idx.metrics.SetPendingAnalyzeTasks(t.idx.taskQueue.analyzeQueue.Size())
 	t.idx.metrics.IncAnalyzeCount()
 	return nil
 }
@@ -401,7 +401,7 @@ func (t *SplitTask) Execute(ctx context.Context) error {
 		return err
 	}
 
-	t.idx.metrics.DequeueSplitTask()
+	t.idx.metrics.SetPendingSplitTasks(t.idx.taskQueue.splitQueue.Size())
 	t.idx.metrics.IncSplitCount()
 	return nil
 }
@@ -431,7 +431,7 @@ func (t *MergeTask) Execute(ctx context.Context) error {
 		return err
 	}
 
-	t.idx.metrics.DequeueMergeTask()
+	t.idx.metrics.SetPendingMergeTasks(t.idx.taskQueue.mergeQueue.Size())
 	t.idx.metrics.IncMergeCount()
 	return nil
 }
@@ -460,7 +460,7 @@ func (t *ReassignTask) Execute(ctx context.Context) error {
 		return err
 	}
 
-	t.idx.metrics.DequeueReassignTask()
+	t.idx.metrics.SetPendingReassignTasks(t.idx.taskQueue.reassignQueue.Size())
 	t.idx.metrics.IncReassignCount()
 	return nil
 }
