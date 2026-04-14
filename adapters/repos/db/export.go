@@ -193,19 +193,63 @@ func (i *Index) snapshotShardsForExport(ctx context.Context, shardNames []string
 	isMT := multitenancy.IsMultiTenant(class.MultiTenancyConfig)
 	snapshotsRoot := i.snapshotsPath()
 
-	// Pre-allocate one result per shard. Each goroutine writes to its own
-	// index so no synchronisation is needed on the slice elements.
+	// Pre-allocate one result per shard
 	results := make([]export.ShardSnapshotResult, len(shardNames))
+	for idx, name := range shardNames {
+		results[idx].ShardName = name
+	}
 
+	// Snapshot with non-blocking TryRLock so that shards whose lock is held
+	// by a concurrent operation (e.g. tenant deactivation) are deferred.
+	// Each iteration processes the uncontested shards; the loop retries the
+	// rest until every shard has been handled or the context is cancelled.
+	pending := make([]int, len(shardNames))
+	for idx := range shardNames {
+		pending[idx] = idx
+	}
+
+	for len(pending) > 0 {
+		pending = i.trySnapshotShards(ctx, pending, shardNames, exportID, class, isMT, snapshotsRoot, results)
+		if ctx.Err() != nil {
+			cleanupSnapshotResults(results)
+			return nil, ctx.Err()
+		}
+	}
+
+	return results, nil
+}
+
+// trySnapshotShards attempts to snapshot each shard in pending using a
+// non-blocking TryRLock. Successfully locked shards are snapshotted; the
+// rest are returned so the caller can retry.
+func (i *Index) trySnapshotShards(
+	ctx context.Context,
+	pending []int,
+	shardNames []string,
+	exportID string,
+	class *models.Class,
+	isMT bool,
+	snapshotsRoot string,
+	results []export.ShardSnapshotResult,
+) (deferred []int) {
 	eg, egCtx := enterrors.NewErrorGroupWithContextWrapper(i.logger, ctx)
 	eg.SetLimit(runtime.GOMAXPROCS(0))
 
-	for idx, shardName := range shardNames {
-		results[idx].ShardName = shardName
+	// One flag per pending entry; written only by the owning goroutine.
+	contested := make([]bool, len(pending))
+
+	for i2, idx := range pending {
+		shardName := shardNames[idx]
 
 		eg.Go(func() error {
+			if !i.shardCreateLocks.TryRLock(shardName) {
+				contested[i2] = true
+				return nil
+			}
+			defer i.shardCreateLocks.RUnlock(shardName)
+
 			snapshotName := lsmkv.SafeSnapshotName(exportID, string(i.Config.ClassName), shardName)
-			snapResult, skipReason, err := i.snapshotLocalShard(egCtx, class, isMT, shardName, snapshotsRoot, snapshotName)
+			snapResult, skipReason, err := i.snapshotLocalShardLocked(egCtx, class, isMT, shardName, snapshotsRoot, snapshotName)
 			if err != nil {
 				return fmt.Errorf("snapshot shard %s/%s: %w", i.Config.ClassName, shardName, err)
 			}
@@ -220,17 +264,24 @@ func (i *Index) snapshotShardsForExport(ctx context.Context, shardNames []string
 	}
 
 	if err := eg.Wait(); err != nil {
-		// Clean up any snapshot dirs created by goroutines that succeeded
-		// before the error group was cancelled.
-		for _, r := range results {
-			if r.SnapshotDir != "" {
-				os.RemoveAll(r.SnapshotDir)
-			}
-		}
-		return nil, err
+		cleanupSnapshotResults(results)
+		return nil
 	}
 
-	return results, nil
+	for j, skip := range contested {
+		if skip {
+			deferred = append(deferred, pending[j])
+		}
+	}
+	return deferred
+}
+
+func cleanupSnapshotResults(results []export.ShardSnapshotResult) {
+	for _, r := range results {
+		if r.SnapshotDir != "" {
+			os.RemoveAll(r.SnapshotDir)
+		}
+	}
 }
 
 // shouldSkipTenant checks the RAFT-based tenant status and returns a skip
@@ -259,26 +310,13 @@ func (i *Index) shouldSkipTenant(class *models.Class, shardName string) (string,
 	}
 }
 
-// snapshotLocalShard snapshots a shard based on its local state. This method holds
-// shardCreateLocks.RLock for the entire operation to prevent races with concurrent
-// shard loading/unloading.
-//
-// For MT classes the tenant status check (shouldSkipTenant) runs under the
-// same lock so that the status cannot change between the check and the
-// snapshot.
-//
-// The local state determines *how* to snapshot: if the shard is loaded
-// (including unloaded lazy shards) it is snapshotted from the live bucket;
-// if not, it is snapshotted directly from disk.
-func (i *Index) snapshotLocalShard(
+// snapshotLocalShardLocked snapshots a shard based on its local state.
+// The caller must hold shardCreateLocks.RLock(shardName) for the duration
+// of the call.
+func (i *Index) snapshotLocalShardLocked(
 	ctx context.Context, class *models.Class, isMT bool, shardName string,
 	snapshotsRoot, snapshotName string,
 ) (*export.ShardSnapshotResult, string, error) {
-	// Hold the shard lock for the entire operation so that no concurrent
-	// load/unload can change the local shard state during the snapshot.
-	i.shardCreateLocks.RLock(shardName)
-	defer i.shardCreateLocks.RUnlock(shardName)
-
 	if isMT {
 		// this is using the RAFT state and not the local state, so there might be a race between these two. We accept
 		// this here as any action concurrent with the export might or might not be reflected in the export.
