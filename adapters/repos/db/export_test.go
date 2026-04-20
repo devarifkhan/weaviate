@@ -166,19 +166,30 @@ func TestSnapshotShardsForExport_CancelUnblocksLockedShard(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
+	started := make(chan struct{})
 	done := make(chan error, 1)
 	go func() {
+		close(started)
 		_, err := idx.snapshotShardsForExport(ctx, []string{shardName}, "export-id")
 		done <- err
 	}()
+	<-started
 
-	// Let the worker enter the polling loop.
-	time.Sleep(50 * time.Millisecond)
+	// Confirm the function is actually blocking (worker is in the polling
+	// loop) before cancelling — otherwise we could end up testing the
+	// dispatcher-exit path instead of the polling-loop-exit path. A few
+	// poll intervals are plenty to enter the select on the ticker; if the
+	// function returns during this window the test setup is broken.
+	select {
+	case err := <-done:
+		t.Fatalf("snapshotShardsForExport returned before cancellation (lock not actually contended): %v", err)
+	case <-time.After(4 * lockPollInterval):
+	}
+
 	cancel()
 
 	select {
 	case err := <-done:
-		require.Error(t, err)
 		require.ErrorIs(t, err, context.Canceled)
 	case <-time.After(2 * time.Second):
 		t.Fatal("snapshotShardsForExport did not respect context cancellation while holding a contended lock")

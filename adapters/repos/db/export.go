@@ -245,18 +245,33 @@ shardLoop:
 				// yield the worker slot to another shard (when there are
 				// more shards than slots) or poll until the writer releases.
 				// Both paths respect egCtx so parent-context cancellation
-				// unblocks promptly, and the sleep caps CPU/goroutine churn
-				// when many shards are write-locked at once.
-				for !i.shardCreateLocks.TryRLock(shardName) {
-					select {
-					case <-egCtx.Done():
-						return egCtx.Err()
-					case <-time.After(lockPollInterval):
-					}
-					if remaining.Load() > int64(workers) {
-						// More shards than worker slots — let another shard use this slot.
-						retry <- idx
-						return nil
+				// unblocks promptly, and the ticker caps CPU/goroutine churn
+				// when many shards are write-locked at once. The ticker is
+				// only allocated on the contended path so uncontested shards
+				// pay no timer overhead.
+				if !i.shardCreateLocks.TryRLock(shardName) {
+					ticker := time.NewTicker(lockPollInterval)
+					defer ticker.Stop()
+					for {
+						select {
+						case <-egCtx.Done():
+							return egCtx.Err()
+						case <-ticker.C:
+						}
+						if remaining.Load() > int64(workers) {
+							// More shards than worker slots — let another shard use this slot.
+							// Guard the send with egCtx so we never block if the dispatcher
+							// has already exited (e.g. via cancellation).
+							select {
+							case retry <- idx:
+								return nil
+							case <-egCtx.Done():
+								return egCtx.Err()
+							}
+						}
+						if i.shardCreateLocks.TryRLock(shardName) {
+							break
+						}
 					}
 				}
 				defer i.shardCreateLocks.RUnlock(shardName)
