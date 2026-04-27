@@ -335,7 +335,7 @@ func NewFSM(cfg Config, authZController authorization.Controller, snapshotter fs
 		snapshotter:        snapshotter,
 		authZController:    authZController,
 		authZManager:       rbacRaft.NewManager(cfg.RBAC, cfg.AuthNConfig, snapshotter, cfg.Logger),
-		dynUserManager:     dynusers.NewManager(cfg.DynamicUserController, cfg.Logger),
+		dynUserManager:     dynusers.NewManager(cfg.DynamicUserController, cfg.NamespacesController, cfg.Logger),
 		namespaceManager:   namespaces.NewManager(cfg.NamespacesController, cfg.Logger),
 		replicationManager: replicationManager,
 		distributedTasksManager: distributedtask.NewManager(distributedtask.ManagerParameters{

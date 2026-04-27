@@ -19,17 +19,26 @@ import (
 	"github.com/sirupsen/logrus"
 	cmd "github.com/weaviate/weaviate/cluster/proto/api"
 	"github.com/weaviate/weaviate/usecases/auth/authentication/apikey"
+	usecasesNamespaces "github.com/weaviate/weaviate/usecases/namespaces"
 )
 
 var ErrBadRequest = errors.New("bad request")
 
-type Manager struct {
-	dynUser *apikey.DBUser
-	logger  logrus.FieldLogger
+type NamespacesExister interface {
+	Exists(name string) bool
 }
 
-func NewManager(dynUser *apikey.DBUser, logger logrus.FieldLogger) *Manager {
-	return &Manager{dynUser: dynUser, logger: logger}
+type Manager struct {
+	dynUser    *apikey.DBUser
+	namespaces NamespacesExister
+	logger     logrus.FieldLogger
+}
+
+func NewManager(dynUser *apikey.DBUser, namespaces *usecasesNamespaces.Controller, logger logrus.FieldLogger) *Manager {
+	if namespaces == nil {
+		panic("cluster/dynusers: namespaces controller must not be nil")
+	}
+	return &Manager{dynUser: dynUser, namespaces: namespaces, logger: logger}
 }
 
 func (m *Manager) CreateUser(c *cmd.ApplyRequest) error {
@@ -39,6 +48,14 @@ func (m *Manager) CreateUser(c *cmd.ApplyRequest) error {
 	req := &cmd.CreateUsersRequest{}
 	if err := json.Unmarshal(c.SubCommand, req); err != nil {
 		return fmt.Errorf("%w: %w", ErrBadRequest, err)
+	}
+
+	// Authoritative existence re-check at apply time. Closes the
+	// handler→apply TOCTOU when a delete-namespace command is RAFT-ordered
+	// before this create-user command: every node observes identical state
+	// and rejects deterministically.
+	if req.Namespace != "" && !m.namespaces.Exists(req.Namespace) {
+		return fmt.Errorf("namespace %q does not exist", req.Namespace)
 	}
 
 	return m.dynUser.CreateUser(req.UserId, req.SecureHash, req.UserIdentifier, req.ApiKeyFirstLetters, req.Namespace, req.CreatedAt)
