@@ -528,6 +528,35 @@ func TestSnapshotRestoreMultipleNamespaces(t *testing.T) {
 	}
 }
 
+func TestValidateAndExtractReturnsNamespace(t *testing.T) {
+	tests := []struct {
+		name      string
+		namespace string
+	}{
+		{name: "with namespace", namespace: "customer1"},
+		{name: "empty namespace", namespace: ""},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			dynUsers, err := NewDBUser(t.TempDir(), true, log)
+			require.NoError(t, err)
+
+			apiKey, hash, identifier, err := keys.CreateApiKeyAndHash()
+			require.NoError(t, err)
+			require.NoError(t, dynUsers.CreateUser("u1", hash, identifier, "", tc.namespace, time.Now()))
+
+			randomKey, _, err := keys.DecodeApiKey(apiKey)
+			require.NoError(t, err)
+			principal, err := dynUsers.ValidateAndExtract(randomKey, identifier)
+			require.NoError(t, err)
+			require.NotNil(t, principal)
+			require.Equal(t, tc.namespace, principal.Namespace)
+			require.False(t, principal.IsGlobalOperator, "dynamic users are never global operators")
+		})
+	}
+}
+
 func TestRestoreIncompleteData(t *testing.T) {
 	dynUsers, err := NewDBUser(t.TempDir(), false, log)
 	require.NoError(t, err)

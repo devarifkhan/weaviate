@@ -356,6 +356,11 @@ func (c *DBUser) ValidateImportedKey(token string) (*models.Principal, error) {
 			return nil, fmt.Errorf("key is revoked")
 		}
 
+		// imported keys are always without a namespace, something is seriously wrong here
+		if c.data.Users[userId].Namespace != "" {
+			return nil, fmt.Errorf("imported key with namespace %v", c.data.Users[userId].Namespace)
+		}
+
 		// Last used time does not have to be exact. If we have multiple concurrent requests for the same
 		// user, only recording one of them is good enough
 		if c.data.Users[userId].TryLock() {
@@ -363,7 +368,11 @@ func (c *DBUser) ValidateImportedKey(token string) (*models.Principal, error) {
 			c.data.Users[userId].Unlock()
 		}
 
-		return &models.Principal{Username: userId, UserType: models.UserTypeInputDb}, nil
+		return &models.Principal{
+			Username:  userId,
+			UserType:  models.UserTypeInputDb,
+			Namespace: "",
+		}, nil
 	}
 
 	return nil, nil
@@ -422,7 +431,11 @@ func (c *DBUser) ValidateAndExtract(key, userIdentifier string) (*models.Princip
 		c.data.Users[userId].Unlock()
 	}
 
-	return &models.Principal{Username: userId, UserType: models.UserTypeInputDb}, nil
+	return &models.Principal{
+		Username:  userId,
+		UserType:  models.UserTypeInputDb,
+		Namespace: c.data.Users[userId].Namespace,
+	}, nil
 }
 
 func (c *DBUser) validateWeakHash(key []byte, weakHash [32]byte) error {
