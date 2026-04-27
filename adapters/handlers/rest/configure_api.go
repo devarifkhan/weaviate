@@ -651,6 +651,7 @@ func MakeAppState(ctx, serverShutdownCtx context.Context, options *swag.CommandL
 		RBAC:                            appState.RBAC,
 		DynamicUserController:           appState.APIKey.Dynamic,
 		NamespacesController:            namespacesController,
+		NamespacesEnabled:               appState.ServerConfig.Config.Namespaces.Enabled,
 		ReplicaCopier:                   replicaCopier,
 		AuthNConfig:                     appState.ServerConfig.Config.Authentication,
 		ReplicationEngineMaxWorkers:     appState.ServerConfig.Config.ReplicationEngineMaxWorkers,

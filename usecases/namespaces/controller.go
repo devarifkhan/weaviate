@@ -73,6 +73,14 @@ var reservedNames = map[string]struct{}{
 	"public":   {},
 }
 
+// Exister is the minimal namespace existence check consumers depend on for
+// dependency injection. *Controller satisfies it. Defined here (alongside
+// the producer) rather than on each consumer side so we can share a single
+// generated mock across the apply-layer and REST handler test suites.
+type Exister interface {
+	Exists(name string) bool
+}
+
 // Controller owns the namespace control-plane state.
 //
 // Concurrency contract: hashicorp RAFT invokes Snapshot from a goroutine

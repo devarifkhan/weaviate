@@ -28,6 +28,7 @@ import (
 	"github.com/weaviate/weaviate/adapters/handlers/rest/operations/users"
 	"github.com/weaviate/weaviate/entities/models"
 	"github.com/weaviate/weaviate/usecases/auth/authentication/apikey"
+	"github.com/weaviate/weaviate/usecases/namespaces"
 )
 
 func TestCreateUnprocessableEntity(t *testing.T) {
@@ -285,15 +286,6 @@ func TestCreateNoDynamic(t *testing.T) {
 	assert.True(t, ok)
 }
 
-type stubNamespaces struct {
-	known map[string]struct{}
-}
-
-func (s stubNamespaces) Exists(name string) bool {
-	_, ok := s.known[name]
-	return ok
-}
-
 func TestCreateUser_Namespaces(t *testing.T) {
 	const userID = "user"
 	tp := true
@@ -363,22 +355,28 @@ func TestCreateUser_Namespaces(t *testing.T) {
 
 			dynUser := NewMockDbUserAndRolesGetter(t)
 			if _, ok := tt.wantStatus.(*users.CreateUserCreated); ok {
-				dynUser.On("GetUsers", userID).Return(map[string]*apikey.User{}, nil)
+				expectedKey := apikey.MakeUserKey(userID, tt.body.Namespace)
+				dynUser.On("GetUsers", expectedKey).Return(map[string]*apikey.User{}, nil)
 				dynUser.On("CheckUserIdentifierExists", mock.Anything).Return(false, nil)
-				dynUser.On("CreateUser", userID, mock.Anything, mock.Anything, mock.Anything, tt.body.Namespace, mock.Anything).Return(nil)
+				dynUser.On("CreateUser", expectedKey, mock.Anything, mock.Anything, mock.Anything, tt.body.Namespace, mock.Anything).Return(nil)
 			}
 
+			ns := namespaces.NewMockExister(t)
 			known := map[string]struct{}{}
 			for _, n := range tt.known {
 				known[n] = struct{}{}
 			}
+			ns.On("Exists", mock.AnythingOfType("string")).Return(func(name string) bool {
+				_, ok := known[name]
+				return ok
+			}).Maybe()
 
 			h := dynUserHandler{
 				dbUsers:           dynUser,
 				authorizer:        authorizer,
 				dbUserEnabled:     true,
 				namespacesEnabled: tt.namespacesEnabled,
-				namespaces:        stubNamespaces{known: known},
+				namespaces:        ns,
 			}
 
 			res := h.createUser(users.CreateUserParams{UserID: userID, HTTPRequest: req, Body: tt.body}, principal)

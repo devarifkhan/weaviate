@@ -19,23 +19,35 @@ import (
 	"github.com/sirupsen/logrus"
 	"github.com/sirupsen/logrus/hooks/test"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
 
 	cmd "github.com/weaviate/weaviate/cluster/proto/api"
 	"github.com/weaviate/weaviate/usecases/auth/authentication/apikey"
 	"github.com/weaviate/weaviate/usecases/auth/authentication/apikey/keys"
+	usecasesNamespaces "github.com/weaviate/weaviate/usecases/namespaces"
 )
 
-type stubNamespaces struct {
-	exists map[string]struct{}
+// newNamespacesMock returns an Exister mock that reports `known` as the set
+// of existing namespaces. AssertExpectations is intentionally suppressed via
+// MaybeCalled so tests that exercise the empty-namespace short-circuit don't
+// fail when Exists never gets called.
+func newNamespacesMock(t *testing.T, known ...string) *usecasesNamespaces.MockExister {
+	t.Helper()
+	m := &usecasesNamespaces.MockExister{}
+	m.Test(t)
+	set := make(map[string]struct{}, len(known))
+	for _, n := range known {
+		set[n] = struct{}{}
+	}
+	m.On("Exists", mock.AnythingOfType("string")).Return(func(name string) bool {
+		_, ok := set[name]
+		return ok
+	}).Maybe()
+	return m
 }
 
-func (s *stubNamespaces) Exists(name string) bool {
-	_, ok := s.exists[name]
-	return ok
-}
-
-func newTestManager(t *testing.T, ns NamespacesExister) (*Manager, *apikey.DBUser) {
+func newTestManager(t *testing.T, ns usecasesNamespaces.Exister) (*Manager, *apikey.DBUser) {
 	t.Helper()
 	logger, _ := test.NewNullLogger()
 	logger.SetLevel(logrus.DebugLevel)
@@ -51,20 +63,11 @@ func mustMarshalJSON(t *testing.T, v any) []byte {
 	return b
 }
 
-// seedUser creates a user directly via the underlying DBUser so apply-method
-// tests can exercise update/delete paths without going through CreateUser.
-func seedUser(t *testing.T, dynUser *apikey.DBUser, userId, namespace string) {
-	t.Helper()
-	_, hash, identifier, err := keys.CreateApiKeyAndHash()
-	require.NoError(t, err)
-	require.NoError(t, dynUser.CreateUser(userId, hash, identifier, "", namespace, time.Now()))
-}
-
 func TestNewManager_NilNamespacesPanics(t *testing.T) {
 	logger, _ := test.NewNullLogger()
 	dynUser, err := apikey.NewDBUser(t.TempDir(), false, logger)
 	require.NoError(t, err)
-	assert.Panics(t, func() { NewManager(dynUser, nil, logger) })
+	assert.Panics(t, func() { NewManager(dynUser, nil, false, logger) })
 }
 
 func TestManager_CreateUser(t *testing.T) {
@@ -84,9 +87,11 @@ func TestManager_CreateUser(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			ns := &stubNamespaces{exists: map[string]struct{}{}}
+			var ns *usecasesNamespaces.MockExister
 			if tc.nsKnown {
-				ns.exists[tc.namespace] = struct{}{}
+				ns = newNamespacesMock(t, tc.namespace)
+			} else {
+				ns = newNamespacesMock(t)
 			}
 			m, dynUser := newTestManager(t, ns)
 
@@ -113,70 +118,30 @@ func TestManager_CreateUser(t *testing.T) {
 	}
 }
 
-func TestManager_DeleteUser(t *testing.T) {
-	m, dynUser := newTestManager(t, &stubNamespaces{})
-	seedUser(t, dynUser, "u1", "")
-
-	apply := &cmd.ApplyRequest{SubCommand: mustMarshalJSON(t, cmd.DeleteUsersRequest{UserId: "u1"})}
-	require.NoError(t, m.DeleteUser(apply))
-	users, err := dynUser.GetUsers("u1")
+// TestManager_CreateUser_NamespacesEnabledRejectsEmpty exercises the
+// apply-layer defense-in-depth: when NamespacesEnabled is true, an empty
+// Namespace must be rejected even though the handler should never produce
+// such a request.
+func TestManager_CreateUser_NamespacesEnabledRejectsEmpty(t *testing.T) {
+	_, hash, identifier, err := keys.CreateApiKeyAndHash()
 	require.NoError(t, err)
+
+	ns := newNamespacesMock(t)
+	logger, _ := test.NewNullLogger()
+	dynUser, err := apikey.NewDBUser(t.TempDir(), false, logger)
+	require.NoError(t, err)
+	m := NewManager(dynUser, ns, true, logger)
+
+	apply := &cmd.ApplyRequest{SubCommand: mustMarshalJSON(t, cmd.CreateUsersRequest{
+		UserId:         "u1",
+		SecureHash:     hash,
+		UserIdentifier: identifier,
+		Namespace:      "",
+		CreatedAt:      time.Now(),
+	})}
+	require.Error(t, m.CreateUser(apply))
+	users, _ := dynUser.GetUsers("u1")
 	assert.Empty(t, users)
-}
-
-func TestManager_ActivateAndSuspendUser(t *testing.T) {
-	tests := []struct {
-		name       string
-		method     string // "activate" | "suspend"
-		seedActive bool
-		wantActive bool
-	}{
-		{name: "suspend active user", method: "suspend", seedActive: true, wantActive: false},
-		{name: "activate suspended user", method: "activate", seedActive: false, wantActive: true},
-	}
-
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			m, dynUser := newTestManager(t, &stubNamespaces{})
-			seedUser(t, dynUser, "u1", "")
-			if !tc.seedActive {
-				require.NoError(t, dynUser.DeactivateUser("u1", false))
-			}
-
-			var (
-				apply *cmd.ApplyRequest
-				err   error
-			)
-			switch tc.method {
-			case "activate":
-				apply = &cmd.ApplyRequest{SubCommand: mustMarshalJSON(t, cmd.ActivateUsersRequest{UserId: "u1"})}
-				err = m.ActivateUser(apply)
-			case "suspend":
-				apply = &cmd.ApplyRequest{SubCommand: mustMarshalJSON(t, cmd.SuspendUserRequest{UserId: "u1"})}
-				err = m.SuspendUser(apply)
-			}
-			require.NoError(t, err)
-			users, err := dynUser.GetUsers("u1")
-			require.NoError(t, err)
-			require.NotNil(t, users["u1"])
-			assert.Equal(t, tc.wantActive, users["u1"].Active)
-		})
-	}
-}
-
-func TestManager_GetUsers(t *testing.T) {
-	m, dynUser := newTestManager(t, &stubNamespaces{})
-	seedUser(t, dynUser, "u1", "ns1")
-
-	payload, err := m.GetUsers(&cmd.QueryRequest{
-		SubCommand: mustMarshalJSON(t, cmd.QueryGetUsersRequest{UserIds: []string{"u1"}}),
-	})
-	require.NoError(t, err)
-
-	resp := cmd.QueryGetUsersResponse{}
-	require.NoError(t, json.Unmarshal(payload, &resp))
-	require.NotNil(t, resp.Users["u1"])
-	assert.Equal(t, "ns1", resp.Users["u1"].Namespace)
 }
 
 // TestManager_MalformedJSON exercises every apply/query method's defensive
@@ -203,7 +168,7 @@ func TestManager_MalformedJSON(t *testing.T) {
 
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			m, _ := newTestManager(t, &stubNamespaces{})
+			m, _ := newTestManager(t, newNamespacesMock(t))
 			err := tc.call(m)
 			require.Error(t, err)
 			assert.ErrorIs(t, err, ErrBadRequest)

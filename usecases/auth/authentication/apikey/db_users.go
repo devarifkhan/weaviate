@@ -28,6 +28,7 @@ import (
 
 	enterrors "github.com/weaviate/weaviate/entities/errors"
 	"github.com/weaviate/weaviate/entities/models"
+	"github.com/weaviate/weaviate/entities/schema"
 )
 
 const (
@@ -36,6 +37,21 @@ const (
 	UserNameMaxLength = 128
 	UserNameRegexCore = `[A-Za-z][-_0-9A-Za-z@.]{0,128}`
 )
+
+// MakeUserKey returns the internal storage key for a user. Namespaced users
+// are stored under "namespace<sep>userId" so two namespaces can host the same
+// short id without collision; unnamespaced users keep the bare id for
+// backward compatibility with pre-namespace data.
+//
+// The separator is the cluster-wide schema.NamespaceSeparator (also used to
+// qualify class names): ":" is excluded from UserNameRegexCore, so a
+// user-supplied id can never contain it and the split-back is unambiguous.
+func MakeUserKey(userId, namespace string) string {
+	if namespace == "" {
+		return userId
+	}
+	return namespace + schema.NamespaceSeparator + userId
+}
 
 type DBUsers interface {
 	CreateUser(userId, secureHash, userIdentifier, apiKeyFirstLetters, namespace string, createdAt time.Time) error
@@ -369,9 +385,10 @@ func (c *DBUser) ValidateImportedKey(token string) (*models.Principal, error) {
 		}
 
 		return &models.Principal{
-			Username:  userId,
-			UserType:  models.UserTypeInputDb,
-			Namespace: "",
+			Username:         userId,
+			UserType:         models.UserTypeInputDb,
+			Namespace:        "",
+			IsGlobalOperator: false,
 		}, nil
 	}
 
@@ -432,9 +449,10 @@ func (c *DBUser) ValidateAndExtract(key, userIdentifier string) (*models.Princip
 	}
 
 	return &models.Principal{
-		Username:  userId,
-		UserType:  models.UserTypeInputDb,
-		Namespace: c.data.Users[userId].Namespace,
+		Username:         userId,
+		UserType:         models.UserTypeInputDb,
+		Namespace:        c.data.Users[userId].Namespace,
+		IsGlobalOperator: false,
 	}, nil
 }
 
