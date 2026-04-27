@@ -6362,6 +6362,10 @@ func init() {
                   "description": "EXPERIMENTAL, DONT USE. THIS WILL BE REMOVED AGAIN. - import api key from static user",
                   "type": "boolean",
                   "default": false
+                },
+                "namespace": {
+                  "description": "Namespace to bind the new user to. Required on namespace-enabled clusters. Must be set by a global operator only.",
+                  "type": "string"
                 }
               }
             }
@@ -7647,6 +7651,10 @@ func init() {
             "null"
           ],
           "format": "date-time"
+        },
+        "namespace": {
+          "description": "The namespace this user is bound to. Only populated for callers with global-operator privileges; omitted otherwise.",
+          "type": "string"
         },
         "roles": {
           "description": "The roles associated with the user.",
@@ -16794,6 +16802,10 @@ func init() {
                   "description": "EXPERIMENTAL, DONT USE. THIS WILL BE REMOVED AGAIN. - import api key from static user",
                   "type": "boolean",
                   "default": false
+                },
+                "namespace": {
+                  "description": "Namespace to bind the new user to. Required on namespace-enabled clusters. Must be set by a global operator only.",
+                  "type": "string"
                 }
               }
             }
@@ -18228,6 +18240,10 @@ func init() {
             "null"
           ],
           "format": "date-time"
+        },
+        "namespace": {
+          "description": "The namespace this user is bound to. Only populated for callers with global-operator privileges; omitted otherwise.",
+          "type": "string"
         },
         "roles": {
           "description": "The roles associated with the user.",

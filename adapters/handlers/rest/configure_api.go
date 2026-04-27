@@ -616,6 +616,7 @@ func MakeAppState(ctx, serverShutdownCtx context.Context, options *swag.CommandL
 		appState.ServerConfig.Config.ReplicationEngineFileCopyWorkers, dataPath, appState.DB, nodeName, appState.Logger)
 
 	namespacesController := usecasesNamespaces.NewController(appState.Logger)
+	appState.NamespacesController = namespacesController
 
 	rConfig := rCluster.Config{
 		WorkDir:                         filepath.Join(dataPath, config.DefaultRaftDir),
@@ -1085,7 +1086,7 @@ func configureAPI(api *operations.WeaviateAPI) http.Handler {
 	replicationHandlers.SetupHandlers(appState.ServerConfig.Config.ReplicaMovementEnabled, api, appState.ClusterService.Raft, appState.Metrics, appState.Authorizer, appState.Logger)
 
 	remoteDbUsers := clients.NewRemoteUser(appState.ClusterHttpClient, appState.Cluster)
-	db_users.SetupHandlers(api, appState.ClusterService.Raft, appState.Authorizer, appState.ServerConfig.Config.Authentication, appState.ServerConfig.Config.Authorization, remoteDbUsers, appState.SchemaManager, appState.Logger)
+	db_users.SetupHandlers(api, appState.ClusterService.Raft, appState.Authorizer, appState.ServerConfig.Config.Authentication, appState.ServerConfig.Config.Authorization, remoteDbUsers, appState.SchemaManager, appState.ServerConfig.Config.Namespaces.Enabled, appState.NamespacesController, appState.Logger)
 	rest_namespaces.SetupHandlers(appState.ServerConfig.Config.Namespaces.Enabled, api, appState.ClusterService.Raft, appState.Authorizer, appState.Logger)
 
 	setupSchemaHandlers(api, appState.SchemaManager, appState.Metrics, appState.Logger)

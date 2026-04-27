@@ -57,6 +57,8 @@ type dynUserHandler struct {
 	dbUserEnabled        bool
 	remoteUser           *clients.RemoteUser
 	nodesGetter          schema.SchemaGetter
+	namespacesEnabled    bool
+	namespaces           NamespacesExister
 }
 
 type DbUserAndRolesGetter interface {
@@ -65,11 +67,16 @@ type DbUserAndRolesGetter interface {
 	RevokeRolesForUser(userName string, roles ...string) error
 }
 
+type NamespacesExister interface {
+	Exists(name string) bool
+}
+
 var validateUserNameRegex = regexp.MustCompile(`^` + apikey.UserNameRegexCore + `$`)
 
 func SetupHandlers(
 	api *operations.WeaviateAPI, dbUsers DbUserAndRolesGetter, authorizer authorization.Authorizer, authNConfig config.Authentication,
-	authZConfig config.Authorization, remoteUser *clients.RemoteUser, nodesGetter schema.SchemaGetter, logger logrus.FieldLogger,
+	authZConfig config.Authorization, remoteUser *clients.RemoteUser, nodesGetter schema.SchemaGetter,
+	namespacesEnabled bool, namespaces NamespacesExister, logger logrus.FieldLogger,
 ) {
 	h := &dynUserHandler{
 		authorizer:           authorizer,
@@ -79,6 +86,8 @@ func SetupHandlers(
 		rbacConfig:           authZConfig.Rbac,
 		remoteUser:           remoteUser,
 		nodesGetter:          nodesGetter,
+		namespacesEnabled:    namespacesEnabled,
+		namespaces:           namespaces,
 		logger:               logger,
 	}
 
@@ -127,6 +136,8 @@ func (h *dynUserHandler) listUsers(params users.ListAllUsersParams, principal *m
 		usersWithTime = h.getLastUsed(filteredUsers)
 	}
 
+	exposeNamespace := principal != nil && principal.IsGlobalOperator
+
 	allDynamicUsers := map[string]struct{}{}
 	response := make([]*models.DBUserInfo, 0, len(filteredUsers))
 	for _, dbUser := range filteredUsers {
@@ -138,7 +149,11 @@ func (h *dynUserHandler) listUsers(params users.ListAllUsersParams, principal *m
 		if val, ok := usersWithTime[dbUser.Id]; ok {
 			lastUsedTime = val
 		}
-		response, err = h.addToListAllResponse(response, dbUser.Id, string(models.UserTypeOutputDbUser), dbUser.Active, apiKeyFirstLetter, &dbUser.CreatedAt, &lastUsedTime)
+		namespace := ""
+		if exposeNamespace {
+			namespace = dbUser.Namespace
+		}
+		response, err = h.addToListAllResponse(response, dbUser.Id, string(models.UserTypeOutputDbUser), dbUser.Active, apiKeyFirstLetter, namespace, &dbUser.CreatedAt, &lastUsedTime)
 		if err != nil {
 			return users.NewListAllUsersInternalServerError().WithPayload(cerrors.ErrPayloadFromSingleErr(err))
 		}
@@ -153,7 +168,7 @@ func (h *dynUserHandler) listUsers(params users.ListAllUsersParams, principal *m
 				// don't overwrite dynamic users with the same name. Can happen after import
 				continue
 			}
-			response, err = h.addToListAllResponse(response, staticUser, string(models.UserTypeOutputDbEnvUser), true, "", nil, nil)
+			response, err = h.addToListAllResponse(response, staticUser, string(models.UserTypeOutputDbEnvUser), true, "", "", nil, nil)
 			if err != nil {
 				return users.NewListAllUsersInternalServerError().WithPayload(cerrors.ErrPayloadFromSingleErr(err))
 			}
@@ -163,7 +178,7 @@ func (h *dynUserHandler) listUsers(params users.ListAllUsersParams, principal *m
 	return users.NewListAllUsersOK().WithPayload(response)
 }
 
-func (h *dynUserHandler) addToListAllResponse(response []*models.DBUserInfo, id, userType string, active bool, apiKeyFirstLetter string, createdAt *time.Time, lastusedAt *time.Time) ([]*models.DBUserInfo, error) {
+func (h *dynUserHandler) addToListAllResponse(response []*models.DBUserInfo, id, userType string, active bool, apiKeyFirstLetter, namespace string, createdAt *time.Time, lastusedAt *time.Time) ([]*models.DBUserInfo, error) {
 	roles, err := h.dbUsers.GetRolesForUserOrGroup(id, authentication.AuthTypeDb, false)
 	if err != nil {
 		return response, err
@@ -180,6 +195,7 @@ func (h *dynUserHandler) addToListAllResponse(response []*models.DBUserInfo, id,
 		DbUserType:         &userType,
 		Roles:              roleNames,
 		APIKeyFirstLetters: apiKeyFirstLetter,
+		Namespace:          namespace,
 	}
 	if createdAt != nil {
 		resp.CreatedAt = strfmt.DateTime(*createdAt)
@@ -220,6 +236,9 @@ func (h *dynUserHandler) getUser(params users.GetUserInfoParams, principal *mode
 		response.CreatedAt = strfmt.DateTime(user.CreatedAt)
 		if isRootUser {
 			response.APIKeyFirstLetters = user.ApiKeyFirstLetters
+		}
+		if principal != nil && principal.IsGlobalOperator {
+			response.Namespace = user.Namespace
 		}
 
 		if params.IncludeLastUsedTime != nil && *params.IncludeLastUsedTime {
@@ -326,6 +345,27 @@ func (h *dynUserHandler) createUser(params users.CreateUserParams, principal *mo
 		return users.NewCreateUserUnprocessableEntity().WithPayload(cerrors.ErrPayloadFromSingleErr(errors.New("db user management is not enabled")))
 	}
 
+	if params.Body.Import != nil && *params.Body.Import && h.namespacesEnabled {
+		return users.NewCreateUserUnprocessableEntity().WithPayload(cerrors.ErrPayloadFromSingleErr(errors.New("import is not supported on namespace-enabled clusters")))
+	}
+
+	if !h.namespacesEnabled && params.Body.Namespace != "" {
+		return users.NewCreateUserUnprocessableEntity().WithPayload(cerrors.ErrPayloadFromSingleErr(errors.New("namespace is not supported: namespaces are not enabled on this cluster")))
+	}
+
+	if params.Body.Namespace != "" && !principal.IsGlobalOperator {
+		return users.NewCreateUserForbidden().WithPayload(cerrors.ErrPayloadFromSingleErr(errors.New("only global operators may bind a user to a namespace")))
+	}
+
+	if h.namespacesEnabled {
+		if params.Body.Namespace == "" {
+			return users.NewCreateUserUnprocessableEntity().WithPayload(cerrors.ErrPayloadFromSingleErr(errors.New("namespace is required on namespace-enabled clusters")))
+		}
+		if !h.namespaces.Exists(params.Body.Namespace) {
+			return users.NewCreateUserUnprocessableEntity().WithPayload(cerrors.ErrPayloadFromSingleErr(fmt.Errorf("namespace %q does not exist", params.Body.Namespace)))
+		}
+	}
+
 	if params.Body.Import != nil && *params.Body.Import {
 		if !h.principalIsRootUser(principal.Username) {
 			return users.NewActivateUserForbidden().WithPayload(cerrors.ErrPayloadFromSingleErr(errors.New("only root users can import static api keys")))
@@ -378,7 +418,7 @@ func (h *dynUserHandler) createUser(params users.CreateUserParams, principal *mo
 		return users.NewCreateUserInternalServerError().WithPayload(cerrors.ErrPayloadFromSingleErr(err))
 	}
 
-	if err := h.dbUsers.CreateUser(params.UserID, hash, userIdentifier, apiKey[:3], "", time.Now()); err != nil {
+	if err := h.dbUsers.CreateUser(params.UserID, hash, userIdentifier, apiKey[:3], params.Body.Namespace, time.Now()); err != nil {
 		return users.NewCreateUserInternalServerError().WithPayload(cerrors.ErrPayloadFromSingleErr(fmt.Errorf("creating user: %w", err)))
 	}
 
