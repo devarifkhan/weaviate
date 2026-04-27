@@ -405,10 +405,8 @@ func TestCreateUser_Namespaces(t *testing.T) {
 
 	helper.CreateNamespace(t, "ns1", adminKey)
 	helper.CreateNamespace(t, "ns2", adminKey)
-	t.Cleanup(func() {
-		helper.DeleteNamespace(t, "ns1", adminKey)
-		helper.DeleteNamespace(t, "ns2", adminKey)
-	})
+	defer helper.DeleteNamespace(t, "ns1", adminKey)
+	defer helper.DeleteNamespace(t, "ns2", adminKey)
 
 	t.Run("happy path: create user bound to ns1", func(t *testing.T) {
 		const (
