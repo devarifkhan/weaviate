@@ -1837,26 +1837,6 @@ func TestMigrateCompactV2SortedFiles(t *testing.T) {
 		require.ElementsMatch(t, []string{"1500.condensed"}, names)
 	})
 
-	t.Run("cleans up legacy .sorted.condensed leftovers", func(t *testing.T) {
-		rootDir := t.TempDir()
-		commitlogDir := commitLogDirectory(rootDir, "main")
-		require.NoError(t, os.MkdirAll(commitlogDir, 0o755))
-
-		// Pre-fix botched downgrade: condensor ran on a .sorted file and produced
-		// a chained name. Migration should normalize it back to {endTS}.condensed.
-		require.NoError(t, os.WriteFile(filepath.Join(commitlogDir, "1000_1500.sorted.condensed"), []byte("a"), 0o644))
-
-		require.NoError(t, newLogger(rootDir, "main").migrateCompactV2SortedFiles())
-
-		entries, err := os.ReadDir(commitlogDir)
-		require.NoError(t, err)
-		names := make([]string, len(entries))
-		for i, e := range entries {
-			names[i] = e.Name()
-		}
-		require.ElementsMatch(t, []string{"1500.condensed"}, names)
-	})
-
 	t.Run("preserves non-compactv2 files", func(t *testing.T) {
 		rootDir := t.TempDir()
 		commitlogDir := commitLogDirectory(rootDir, "main")

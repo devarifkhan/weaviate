@@ -323,11 +323,10 @@ func (l *hnswCommitLogger) migrateCompactV2Snapshot() error {
 }
 
 // migrateCompactV2SortedFiles renames any compact v2 ".sorted" commit log
-// files (and ".sorted.condensed" leftovers from earlier botched downgrades)
-// to plain "{endTS}.condensed". A .sorted file is just a re-ordered WAL, so
-// renaming is enough — the rest of the commit logger (condensor, combiner,
-// snapshotFileName, ...) only knows about ".condensed" and would otherwise
-// produce chained suffixes like ".sorted.condensed" or ".sorted.snapshot".
+// files to plain "{endTS}.condensed". A .sorted file is just a re-ordered
+// WAL, so renaming is enough — the rest of the commit logger (condensor,
+// combiner, snapshotFileName, ...) only knows about ".condensed" and would
+// otherwise produce chained suffixes like ".sorted.snapshot".
 // The method is idempotent: once renamed, there is nothing left to migrate.
 func (l *hnswCommitLogger) migrateCompactV2SortedFiles() error {
 	commitlogDir := commitLogDirectory(l.rootPath, l.id)
@@ -340,20 +339,11 @@ func (l *hnswCommitLogger) migrateCompactV2SortedFiles() error {
 	}
 
 	for _, entry := range entries {
-		if entry.IsDir() {
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".sorted") {
 			continue
 		}
 		name := entry.Name()
-
-		var inner string
-		switch {
-		case strings.HasSuffix(name, ".sorted.condensed"):
-			inner = strings.TrimSuffix(name, ".sorted.condensed")
-		case strings.HasSuffix(name, ".sorted"):
-			inner = strings.TrimSuffix(name, ".sorted")
-		default:
-			continue
-		}
+		inner := strings.TrimSuffix(name, ".sorted")
 
 		// Parse end timestamp (handles both "{ts}" and "{start}_{end}")
 		var endTS int64
