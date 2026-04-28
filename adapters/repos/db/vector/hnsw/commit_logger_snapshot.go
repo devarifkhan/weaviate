@@ -394,6 +394,48 @@ func (l *hnswCommitLogger) migrateCompactV2SortedFiles() error {
 	return nil
 }
 
+// cleanupCompactV2TempFiles removes orphan ".tmp" files left in the commitlog
+// directory by a crashed compact v2 write. Compact v2's SafeFileWriter writes
+// to "{finalPath}.tmp" and atomically renames on commit; if the process died
+// before the rename, the .tmp file persists. v1.37 only handles ".scratch.tmp"
+// and ".combined.tmp" — anything else (e.g. "1500.sorted.tmp") would slip
+// through and break getCommitFiles' timestamp parsing.
+//
+// v1.37 itself never writes ".sorted.tmp" or ".snapshot.tmp" in this directory,
+// so deleting them is safe.
+func (l *hnswCommitLogger) cleanupCompactV2TempFiles() error {
+	commitlogDir := commitLogDirectory(l.rootPath, l.id)
+	entries, err := l.fs.ReadDir(commitlogDir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return errors.Wrap(err, "read commitlog directory")
+	}
+
+	for _, entry := range entries {
+		if entry.IsDir() {
+			continue
+		}
+		name := entry.Name()
+		if !strings.HasSuffix(name, ".sorted.tmp") && !strings.HasSuffix(name, ".snapshot.tmp") {
+			continue
+		}
+
+		path := filepath.Join(commitlogDir, name)
+		if err := l.fs.Remove(path); err != nil && !os.IsNotExist(err) {
+			return errors.Wrapf(err, "remove orphan temp file %s", path)
+		}
+
+		l.logger.WithFields(logrus.Fields{
+			"action": "cleanup_compact_v2_tmp",
+			"path":   path,
+		}).Info("removed orphan compact v2 temp file")
+	}
+
+	return nil
+}
+
 func (l *hnswCommitLogger) initSnapshotData() error {
 	// Migrate compact v2 snapshots from the commitlog directory to the
 	// snapshot directory. This enables downgrade compatibility: compact v2
@@ -407,6 +449,11 @@ func (l *hnswCommitLogger) initSnapshotData() error {
 	// of the commit logger doesn't have to know about the .sorted format.
 	if err := l.migrateCompactV2SortedFiles(); err != nil {
 		l.logger.Warnf("failed to migrate compact v2 sorted files: %v", err)
+	}
+
+	// Remove orphan .tmp files left behind by a crashed compact v2 write.
+	if err := l.cleanupCompactV2TempFiles(); err != nil {
+		l.logger.Warnf("failed to cleanup compact v2 temp files: %v", err)
 	}
 
 	dirs := strings.Split(filepath.Clean(l.rootPath), string(os.PathSeparator))
