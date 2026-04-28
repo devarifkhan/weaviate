@@ -454,6 +454,10 @@ func (h *dynUserHandler) rotateKey(params users.RotateUserAPIKeyParams, principa
 		return users.NewRotateUserAPIKeyUnprocessableEntity().WithPayload(cerrors.ErrPayloadFromSingleErr(errors.New("db user management is not enabled")))
 	}
 
+	if h.namespacesEnabled && !principal.IsGlobalOperator {
+		return users.NewRotateUserAPIKeyForbidden().WithPayload(cerrors.ErrPayloadFromSingleErr(errors.New("user management on namespace-enabled clusters is restricted to global operators")))
+	}
+
 	existingUser, err := h.dbUsers.GetUsers(params.UserID)
 	if err != nil {
 		return users.NewRotateUserAPIKeyInternalServerError().WithPayload(cerrors.ErrPayloadFromSingleErr(fmt.Errorf("checking user existence: %w", err)))
@@ -518,6 +522,10 @@ func (h *dynUserHandler) deleteUser(params users.DeleteUserParams, principal *mo
 		return users.NewDeleteUserUnprocessableEntity().WithPayload(cerrors.ErrPayloadFromSingleErr(errors.New("db user management is not enabled")))
 	}
 
+	if h.namespacesEnabled && !principal.IsGlobalOperator {
+		return users.NewDeleteUserForbidden().WithPayload(cerrors.ErrPayloadFromSingleErr(errors.New("user management on namespace-enabled clusters is restricted to global operators")))
+	}
+
 	if params.UserID == principal.Username {
 		return users.NewDeleteUserUnprocessableEntity().WithPayload(cerrors.ErrPayloadFromSingleErr(fmt.Errorf("cannot delete its own user %q", params.UserID)))
 	}
@@ -566,6 +574,10 @@ func (h *dynUserHandler) deactivateUser(params users.DeactivateUserParams, princ
 		return users.NewDeactivateUserUnprocessableEntity().WithPayload(cerrors.ErrPayloadFromSingleErr(errors.New("db user management is not enabled")))
 	}
 
+	if h.namespacesEnabled && !principal.IsGlobalOperator {
+		return users.NewDeactivateUserForbidden().WithPayload(cerrors.ErrPayloadFromSingleErr(errors.New("user management on namespace-enabled clusters is restricted to global operators")))
+	}
+
 	if params.UserID == principal.Username {
 		return users.NewDeactivateUserUnprocessableEntity().WithPayload(cerrors.ErrPayloadFromSingleErr(fmt.Errorf("cannot deactivate its own user %q", params.UserID)))
 	}
@@ -610,6 +622,10 @@ func (h *dynUserHandler) activateUser(params users.ActivateUserParams, principal
 
 	if !h.dbUserEnabled {
 		return users.NewActivateUserUnprocessableEntity().WithPayload(cerrors.ErrPayloadFromSingleErr(errors.New("db user management is not enabled")))
+	}
+
+	if h.namespacesEnabled && !principal.IsGlobalOperator {
+		return users.NewActivateUserForbidden().WithPayload(cerrors.ErrPayloadFromSingleErr(errors.New("user management on namespace-enabled clusters is restricted to global operators")))
 	}
 
 	if h.isRootUser(params.UserID) {
