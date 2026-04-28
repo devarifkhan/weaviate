@@ -426,25 +426,31 @@ func (l *hnswCommitLogger) cleanupCompactV2TempFiles() error {
 	return nil
 }
 
-func (l *hnswCommitLogger) initSnapshotData() error {
-	// Migrate compact v2 snapshots from the commitlog directory to the
-	// snapshot directory. This enables downgrade compatibility: compact v2
-	// stores snapshots alongside commit logs, but the current version
-	// expects them in a separate directory.
+// migrateFromCompactV2 normalizes any compact v2 on-disk artifacts so the
+// rest of the commit logger only sees v1.37 native formats. Runs once at
+// startup and is a no-op when no compact v2 artifacts are present.
+// Failures are logged but non-fatal: a partial migration leaves some
+// artifacts in place rather than blocking startup.
+func (l *hnswCommitLogger) migrateFromCompactV2() {
+	// .snapshot files in the commitlog dir → snapshot dir.
 	if err := l.migrateCompactV2Snapshot(); err != nil {
 		l.logger.Warnf("failed to migrate compact v2 snapshot: %v", err)
 	}
 
-	// Rename compact v2 .sorted commit log files to .condensed so the rest
-	// of the commit logger doesn't have to know about the .sorted format.
+	// .sorted commit log files → .condensed (a .sorted file is just a
+	// re-ordered WAL, so renaming is enough).
 	if err := l.migrateCompactV2SortedFiles(); err != nil {
 		l.logger.Warnf("failed to migrate compact v2 sorted files: %v", err)
 	}
 
-	// Remove orphan .tmp files left behind by a crashed compact v2 write.
+	// Orphan .tmp leftovers from a crashed compact v2 write.
 	if err := l.cleanupCompactV2TempFiles(); err != nil {
 		l.logger.Warnf("failed to cleanup compact v2 temp files: %v", err)
 	}
+}
+
+func (l *hnswCommitLogger) initSnapshotData() error {
+	l.migrateFromCompactV2()
 
 	dirs := strings.Split(filepath.Clean(l.rootPath), string(os.PathSeparator))
 	if ln := len(dirs); ln > 2 {
