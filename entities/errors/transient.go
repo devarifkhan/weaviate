@@ -14,6 +14,7 @@ package errors
 import (
 	"errors"
 	"fmt"
+	"syscall"
 )
 
 func IsTransient(err error) bool {
@@ -22,6 +23,13 @@ func IsTransient(err error) bool {
 	}
 
 	if errors.Is(err, ErrNotEnoughMappings) {
+		return true
+	}
+
+	// Disk-full errors are transient: an operator (or automated job) can free
+	// up or grow the disk, so retrying gives the recovery a chance to land
+	// before we discard the batch.
+	if errors.Is(err, syscall.ENOSPC) {
 		return true
 	}
 
