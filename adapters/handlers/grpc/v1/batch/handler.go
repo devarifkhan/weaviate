@@ -27,6 +27,7 @@ import (
 	"github.com/weaviate/weaviate/usecases/auth/authorization"
 	"github.com/weaviate/weaviate/usecases/objects"
 	"github.com/weaviate/weaviate/usecases/schema"
+	"github.com/weaviate/weaviate/usecases/schema/namespacing"
 )
 
 type Handler struct {
@@ -63,10 +64,11 @@ func (h *Handler) BatchObjects(ctx context.Context, req *pb.BatchObjectsRequest)
 	knownClasses := map[string]versioned.Class{}
 	knownClassesAuthCheck := map[string]*models.Class{}
 	classGetter := func(classname, shard string) (*models.Class, error) {
-		// classname might be an alias
-		if cls := h.schemaManager.ResolveAlias(classname); cls != "" {
-			classname = cls
+		resolved, _, err := namespacing.Resolve(principal, h.schemaManager, classname)
+		if err != nil {
+			return nil, err
 		}
+		classname = resolved
 		// use a letter that cannot be in class/shard name to not allow different combinations leading to the same combined name
 		classTenantName := classname + "#" + shard
 		class, ok := knownClassesAuthCheck[classTenantName]

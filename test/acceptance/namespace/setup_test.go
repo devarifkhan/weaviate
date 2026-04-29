@@ -49,7 +49,7 @@ func TestMain(m *testing.M) {
 		WithUserApiKey(noPermsUser, noPermsKey).
 		WithDbUsers().
 		WithNamespaces().
-		WithWeaviate().
+		WithWeaviateWithGRPC().
 		Start(ctx)
 	if err != nil {
 		panic(errors.Wrap(err, "failed to start shared compose"))
