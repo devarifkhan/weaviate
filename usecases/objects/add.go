@@ -39,7 +39,7 @@ func (m *Manager) AddObject(ctx context.Context, principal *models.Principal, ob
 	repl *additional.ReplicationProperties,
 ) (*models.Object, error) {
 	className := schema.UppercaseClassName(object.Class)
-	className, _, err := namespacing.Resolve(principal, m.schemaManager, className)
+	className, _, err := namespacing.Resolve(principal, m.schemaManager, m.config.Config.Namespaces.Enabled, className)
 	if err != nil {
 		return nil, err
 	}

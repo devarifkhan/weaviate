@@ -63,6 +63,23 @@ const (
 	// audit all consumers of NamespaceSeparator and update them atomically.
 	// TestValidateClassName_RejectsNamespaceSeparator locks the contract.
 	NamespaceSeparator = ":"
+
+	// Namespace name validation contract (kept tight so the operator API gives
+	// predictable results and so name-in-URL round-tripping is unambiguous):
+	//
+	//   - Must start with a lowercase ASCII letter.
+	//   - Subsequent characters are lowercase letters or digits.
+	//   - Length in [NamespaceMinLength, NamespaceMaxLength].
+	//   - Must not collide with a reserved name.
+	//
+	// The regex and reserved-name list live in usecases/namespaces alongside
+	// ValidateName; only the length bounds are shared here so both the
+	// namespace controller and the syntactic qualification helpers
+	// (usecases/schema/namespacing) read from a single source of truth.
+	// Reserved names are held back for platform/system use (e.g. a future
+	// "default" namespace or routing sentinels) and are refused at Create time.
+	NamespaceMinLength = 3
+	NamespaceMaxLength = 36
 )
 
 // ValidateClassName validates that this string is a valid class name (format wise)

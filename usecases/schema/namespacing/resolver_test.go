@@ -92,14 +92,17 @@ func TestResolve(t *testing.T) {
 		testName  string
 		principal *models.Principal
 		sm        SchemaManager
+		nsEnabled bool
 		input     string
 		wantClass string
 		wantAlias string
+		wantErr   error
 	}{
 		{
 			testName:  "namespaced principal resolves to qualified name",
 			principal: &models.Principal{Username: "u", Namespace: "customer1"},
 			sm:        &fakeSchemaManager{aliases: map[string]string{}},
+			nsEnabled: true,
 			input:     "Movies",
 			wantClass: "customer1:Movies",
 			wantAlias: "",
@@ -108,6 +111,7 @@ func TestResolve(t *testing.T) {
 			testName:  "namespaced principal with alias",
 			principal: &models.Principal{Username: "u", Namespace: "customer1"},
 			sm:        &fakeSchemaManager{aliases: map[string]string{"customer1:Films": "customer1:Movies"}},
+			nsEnabled: true,
 			input:     "Films",
 			wantClass: "customer1:Movies",
 			wantAlias: "customer1:Films",
@@ -116,6 +120,7 @@ func TestResolve(t *testing.T) {
 			testName:  "global principal passthrough",
 			principal: &models.Principal{Username: "admin", IsGlobalOperator: true},
 			sm:        &fakeSchemaManager{aliases: map[string]string{}},
+			nsEnabled: true,
 			input:     "Movies",
 			wantClass: "Movies",
 			wantAlias: "",
@@ -124,6 +129,7 @@ func TestResolve(t *testing.T) {
 			testName:  "global principal qualified input with alias hit resolves normally",
 			principal: &models.Principal{Username: "admin", IsGlobalOperator: true},
 			sm:        &fakeSchemaManager{aliases: map[string]string{"customer1:Movies": "customer1:ActualMovies"}},
+			nsEnabled: true,
 			input:     "customer1:Movies",
 			wantClass: "customer1:ActualMovies",
 			wantAlias: "customer1:Movies",
@@ -132,6 +138,7 @@ func TestResolve(t *testing.T) {
 			testName:  "nil principal passthrough",
 			principal: nil,
 			sm:        &fakeSchemaManager{aliases: map[string]string{}},
+			nsEnabled: true,
 			input:     "Movies",
 			wantClass: "Movies",
 			wantAlias: "",
@@ -140,6 +147,7 @@ func TestResolve(t *testing.T) {
 			testName:  "namespaced principal qualified input gets double prefixed",
 			principal: &models.Principal{Username: "u", Namespace: "customer1"},
 			sm:        &fakeSchemaManager{aliases: map[string]string{}},
+			nsEnabled: true,
 			input:     "customer2:Movies",
 			wantClass: "customer1:customer2:Movies",
 			wantAlias: "",
@@ -148,14 +156,40 @@ func TestResolve(t *testing.T) {
 			testName:  "namespaced principal with alias that resolves to target",
 			principal: &models.Principal{Username: "u", Namespace: "ns1"},
 			sm:        &fakeSchemaManager{aliases: map[string]string{"ns1:MyAlias": "ns1:MyClass"}},
+			nsEnabled: true,
 			input:     "MyAlias",
 			wantClass: "ns1:MyClass",
 			wantAlias: "ns1:MyAlias",
 		},
+		{
+			// Fail-closed: a stray principal.Namespace on an NS-disabled
+			// cluster should never reach the resolver. Surfacing it as an
+			// error catches upstream bugs (mis-issued tokens, missed startup
+			// gating) instead of silently ignoring the namespace.
+			testName:  "ns disabled rejects principal with namespace",
+			principal: &models.Principal{Username: "u", Namespace: "customer1"},
+			sm:        &fakeSchemaManager{aliases: map[string]string{}},
+			nsEnabled: false,
+			input:     "Movies",
+			wantErr:   ErrNamespaceOnDisabledCluster,
+		},
+		{
+			testName:  "ns disabled resolves alias on raw input for non-namespaced principal",
+			principal: &models.Principal{Username: "u"},
+			sm:        &fakeSchemaManager{aliases: map[string]string{"Films": "Movies"}},
+			nsEnabled: false,
+			input:     "Films",
+			wantClass: "Movies",
+			wantAlias: "Films",
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.testName, func(t *testing.T) {
-			gotClass, gotAlias, err := Resolve(tc.principal, tc.sm, tc.input)
+			gotClass, gotAlias, err := Resolve(tc.principal, tc.sm, tc.nsEnabled, tc.input)
+			if tc.wantErr != nil {
+				require.ErrorIs(t, err, tc.wantErr)
+				return
+			}
 			require.NoError(t, err)
 			assert.Equal(t, tc.wantClass, gotClass)
 			assert.Equal(t, tc.wantAlias, gotAlias)

@@ -62,7 +62,7 @@ type Service struct {
 
 func NewService(allowAnonymous bool, authComposer composer.TokenFunc, state *state.State) (*Service, batch.Drain) {
 	authenticator := auth.NewHandler(allowAnonymous, authComposer)
-	batchHandler := batch.NewHandler(state.Authorizer, state.BatchManager, state.Logger, authenticator, state.SchemaManager)
+	batchHandler := batch.NewHandler(state.Authorizer, state.BatchManager, state.Logger, authenticator, state.SchemaManager, state.ServerConfig.Config.Namespaces.Enabled)
 	batchStreamHandler, batchDrain := batch.Start(authenticator, state.Authorizer, batchHandler, state.SchemaManager, prometheus.DefaultRegisterer, NUMCPU, state.Logger)
 	return &Service{
 		traverser:            state.Traverser,
@@ -288,7 +288,7 @@ func (s *Service) search(ctx context.Context, req *pb.SearchRequest) (*pb.Search
 	}
 	ctx = restCtx.AddPrincipalToContext(ctx, principal)
 
-	resolved, _, err := namespacing.Resolve(principal, s.schemaManager, req.Collection)
+	resolved, _, err := namespacing.Resolve(principal, s.schemaManager, s.config.Namespaces.Enabled, req.Collection)
 	if err != nil {
 		return nil, err
 	}

@@ -41,7 +41,7 @@ func (b *BatchManager) AddObjects(ctx context.Context, principal *models.Princip
 	classesShards := make(map[string][]string)
 	for _, obj := range objects {
 		obj.Class = schema.UppercaseClassName(obj.Class)
-		cls, _, err := namespacing.Resolve(principal, b.schemaManager, obj.Class)
+		cls, _, err := namespacing.Resolve(principal, b.schemaManager, b.config.Config.Namespaces.Enabled, obj.Class)
 		if err != nil {
 			return nil, err
 		}

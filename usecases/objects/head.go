@@ -27,7 +27,7 @@ import (
 func (m *Manager) HeadObject(ctx context.Context, principal *models.Principal, className string,
 	id strfmt.UUID, repl *additional.ReplicationProperties, tenant string,
 ) (bool, *Error) {
-	className, _, err := namespacing.Resolve(principal, m.schemaManager, className)
+	className, _, err := namespacing.Resolve(principal, m.schemaManager, m.config.Config.Namespaces.Enabled, className)
 	if err != nil {
 		return false, &Error{err.Error(), StatusInternalServerError, err}
 	}

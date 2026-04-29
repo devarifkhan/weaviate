@@ -114,7 +114,12 @@ func (h *Handler) AddClass(ctx context.Context, principal *models.Principal,
 	cls.Class = schema.UppercaseClassName(cls.Class)
 	cls.Properties = schema.LowercaseAllPropertyNames(cls.Properties)
 
-	// Captured for the entity-name validator, which forbids ":".
+	// originalClassName must be passed to validateCanAddClass below: the
+	// qualified form ("<ns>:<Class>") fails ValidateClassName because
+	// ClassNameRegexCore forbids ":". Removing this capture would reject
+	// every legitimate namespaced create. Both the rejection of
+	// caller-supplied ":" and the success of the namespaced-create flow are
+	// covered by test/acceptance/namespace/collection_alias_test.go.
 	originalClassName := cls.Class
 	qualified, err := namespacing.QualifyForCreate(principal, h.config.Namespaces.Enabled, cls.Class)
 	if errors.Is(err, namespacing.ErrCreateRequiresNamespace) {

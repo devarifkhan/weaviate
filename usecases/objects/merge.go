@@ -50,7 +50,7 @@ func (m *Manager) MergeObject(ctx context.Context, principal *models.Principal,
 	if err := m.validateInputs(updates); err != nil {
 		return &Error{"bad request", StatusBadRequest, err}
 	}
-	className, aliasName, err := namespacing.Resolve(principal, m.schemaManager, schema.UppercaseClassName(updates.Class))
+	className, aliasName, err := namespacing.Resolve(principal, m.schemaManager, m.config.Config.Namespaces.Enabled, schema.UppercaseClassName(updates.Class))
 	if err != nil {
 		return &Error{err.Error(), StatusInternalServerError, err}
 	}

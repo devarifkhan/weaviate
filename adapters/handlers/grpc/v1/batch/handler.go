@@ -36,15 +36,17 @@ type Handler struct {
 	batchManager  *objects.BatchManager
 	logger        logrus.FieldLogger
 	schemaManager *schema.Manager
+	nsEnabled     bool
 }
 
-func NewHandler(authorizer authorization.Authorizer, batchManager *objects.BatchManager, logger logrus.FieldLogger, authenticator *auth.Handler, schemaManager *schema.Manager) *Handler {
+func NewHandler(authorizer authorization.Authorizer, batchManager *objects.BatchManager, logger logrus.FieldLogger, authenticator *auth.Handler, schemaManager *schema.Manager, nsEnabled bool) *Handler {
 	return &Handler{
 		authorizer:    authorizer,
 		authenticator: authenticator,
 		batchManager:  batchManager,
 		logger:        logger,
 		schemaManager: schemaManager,
+		nsEnabled:     nsEnabled,
 	}
 }
 
@@ -64,7 +66,7 @@ func (h *Handler) BatchObjects(ctx context.Context, req *pb.BatchObjectsRequest)
 	knownClasses := map[string]versioned.Class{}
 	knownClassesAuthCheck := map[string]*models.Class{}
 	classGetter := func(classname, shard string) (*models.Class, error) {
-		resolved, _, err := namespacing.Resolve(principal, h.schemaManager, classname)
+		resolved, _, err := namespacing.Resolve(principal, h.schemaManager, h.nsEnabled, classname)
 		if err != nil {
 			return nil, err
 		}
