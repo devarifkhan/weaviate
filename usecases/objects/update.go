@@ -36,10 +36,7 @@ func (m *Manager) UpdateObject(ctx context.Context, principal *models.Principal,
 	repl *additional.ReplicationProperties,
 ) (*models.Object, error) {
 	className := schema.UppercaseClassName(updates.Class)
-	className, _, err := namespacing.Resolve(principal, m.schemaManager, m.config.Config.Namespaces.Enabled, className)
-	if err != nil {
-		return nil, err
-	}
+	className, _ = namespacing.Resolve(principal, m.schemaManager, m.config.Config.Namespaces.Enabled, className)
 	updates.Class = className
 
 	if err := m.authorizer.Authorize(ctx, principal, authorization.UPDATE, authorization.Objects(updates.Class, updates.Tenant, updates.ID)); err != nil {

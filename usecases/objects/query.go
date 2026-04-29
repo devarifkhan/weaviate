@@ -72,11 +72,7 @@ func (m *Manager) Query(ctx context.Context, principal *models.Principal, params
 	class := "*"
 
 	if params != nil && params.Class != "" {
-		resolved, _, err := namespacing.Resolve(principal, m.schemaManager, m.config.Config.Namespaces.Enabled, params.Class)
-		if err != nil {
-			return nil, &Error{err.Error(), StatusInternalServerError, err}
-		}
-		params.Class = resolved
+		params.Class, _ = namespacing.Resolve(principal, m.schemaManager, m.config.Config.Namespaces.Enabled, params.Class)
 		class = params.Class
 	}
 

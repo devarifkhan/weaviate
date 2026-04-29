@@ -288,11 +288,7 @@ func (s *Service) search(ctx context.Context, req *pb.SearchRequest) (*pb.Search
 	}
 	ctx = restCtx.AddPrincipalToContext(ctx, principal)
 
-	resolved, _, err := namespacing.Resolve(principal, s.schemaManager, s.config.Namespaces.Enabled, req.Collection)
-	if err != nil {
-		return nil, err
-	}
-	req.Collection = resolved
+	req.Collection, _ = namespacing.Resolve(principal, s.schemaManager, s.config.Namespaces.Enabled, req.Collection)
 
 	parser := NewParser(
 		req.Uses_127Api,

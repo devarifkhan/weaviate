@@ -38,10 +38,7 @@ func (m *Manager) DeleteObject(ctx context.Context,
 	repl *additional.ReplicationProperties, tenant string,
 ) error {
 	className = schema.UppercaseClassName(className)
-	className, _, err := namespacing.Resolve(principal, m.schemaManager, m.config.Config.Namespaces.Enabled, className)
-	if err != nil {
-		return err
-	}
+	className, _ = namespacing.Resolve(principal, m.schemaManager, m.config.Config.Namespaces.Enabled, className)
 
 	if err := m.authorizer.Authorize(ctx, principal, authorization.DELETE, authorization.Objects(className, tenant, id)); err != nil {
 		return err

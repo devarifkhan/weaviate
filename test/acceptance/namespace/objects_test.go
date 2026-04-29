@@ -96,7 +96,7 @@ func seedTwo(t *testing.T, class string, id strfmt.UUID, ns1Title, ns2Title, k1,
 
 // TestNamespaces_ObjectLifecycle exercises namespacing.Resolve fan-out across
 // the object REST endpoints (add/get/update/merge/delete/head/list/validate)
-// plus the WS4 contract for double-prefix and global-principal access.
+// plus the contract for double-prefix and global-principal access.
 func TestNamespaces_ObjectLifecycle(t *testing.T) {
 	user1Key, user2Key := twoNamespaces(t)
 

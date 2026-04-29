@@ -25,8 +25,9 @@ var (
 )
 
 const (
-	// Restricted by max length allowed for dir name (255 chars)
-	// As dir containing class data is named after class, 255 chars are allowed
+	// ClassNameMaxLength is restricted by the max length allowed for a
+	// directory name (255 chars). As the dir containing class data is named
+	// after the class, 255 chars are allowed.
 	ClassNameMaxLength = 255
 	ClassNameRegexCore = `[A-Z][_0-9A-Za-z]{0,254}`
 	// ClassNameRegexAllowRegex allowed chars in class name including regex patterns, 255 chars are allowed

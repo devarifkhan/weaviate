@@ -32,10 +32,7 @@ func (m *Manager) ValidateObject(ctx context.Context, principal *models.Principa
 	obj *models.Object, repl *additional.ReplicationProperties,
 ) error {
 	className := schema.UppercaseClassName(obj.Class)
-	className, _, err := namespacing.Resolve(principal, m.schemaManager, m.config.Config.Namespaces.Enabled, className)
-	if err != nil {
-		return err
-	}
+	className, _ = namespacing.Resolve(principal, m.schemaManager, m.config.Config.Namespaces.Enabled, className)
 	obj.Class = className
 
 	if err := m.authorizer.Authorize(ctx, principal, authorization.READ, authorization.Objects(className, obj.Tenant, obj.ID)); err != nil {

@@ -66,11 +66,7 @@ func (h *Handler) BatchObjects(ctx context.Context, req *pb.BatchObjectsRequest)
 	knownClasses := map[string]versioned.Class{}
 	knownClassesAuthCheck := map[string]*models.Class{}
 	classGetter := func(classname, shard string) (*models.Class, error) {
-		resolved, _, err := namespacing.Resolve(principal, h.schemaManager, h.nsEnabled, classname)
-		if err != nil {
-			return nil, err
-		}
-		classname = resolved
+		classname, _ = namespacing.Resolve(principal, h.schemaManager, h.nsEnabled, classname)
 		// use a letter that cannot be in class/shard name to not allow different combinations leading to the same combined name
 		classTenantName := classname + "#" + shard
 		class, ok := knownClassesAuthCheck[classTenantName]

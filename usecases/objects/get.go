@@ -36,14 +36,9 @@ func (m *Manager) GetObject(ctx context.Context, principal *models.Principal,
 	replProps *additional.ReplicationProperties, tenant string,
 ) (*models.Object, error) {
 	class = schema.UppercaseClassName(class)
-	resolvedClass, _, err := namespacing.Resolve(principal, m.schemaManager, m.config.Config.Namespaces.Enabled, class)
-	if err != nil {
-		return nil, err
-	}
-	class = resolvedClass
+	class, _ = namespacing.Resolve(principal, m.schemaManager, m.config.Config.Namespaces.Enabled, class)
 
-	err = m.authorizer.Authorize(ctx, principal, authorization.READ, authorization.Objects(class, tenant, id))
-	if err != nil {
+	if err := m.authorizer.Authorize(ctx, principal, authorization.READ, authorization.Objects(class, tenant, id)); err != nil {
 		return nil, err
 	}
 

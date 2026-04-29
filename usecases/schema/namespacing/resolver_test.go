@@ -15,7 +15,6 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/require"
 
 	"github.com/weaviate/weaviate/entities/models"
 )
@@ -96,7 +95,6 @@ func TestResolve(t *testing.T) {
 		input     string
 		wantClass string
 		wantAlias string
-		wantErr   error
 	}{
 		{
 			testName:  "namespaced principal resolves to qualified name",
@@ -162,16 +160,13 @@ func TestResolve(t *testing.T) {
 			wantAlias: "ns1:MyAlias",
 		},
 		{
-			// Fail-closed: a stray principal.Namespace on an NS-disabled
-			// cluster should never reach the resolver. Surfacing it as an
-			// error catches upstream bugs (mis-issued tokens, missed startup
-			// gating) instead of silently ignoring the namespace.
-			testName:  "ns disabled rejects principal with namespace",
+			testName:  "ns disabled ignores principal namespace",
 			principal: &models.Principal{Username: "u", Namespace: "customer1"},
 			sm:        &fakeSchemaManager{aliases: map[string]string{}},
 			nsEnabled: false,
 			input:     "Movies",
-			wantErr:   ErrNamespaceOnDisabledCluster,
+			wantClass: "Movies",
+			wantAlias: "",
 		},
 		{
 			testName:  "ns disabled resolves alias on raw input for non-namespaced principal",
@@ -185,12 +180,7 @@ func TestResolve(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.testName, func(t *testing.T) {
-			gotClass, gotAlias, err := Resolve(tc.principal, tc.sm, tc.nsEnabled, tc.input)
-			if tc.wantErr != nil {
-				require.ErrorIs(t, err, tc.wantErr)
-				return
-			}
-			require.NoError(t, err)
+			gotClass, gotAlias := Resolve(tc.principal, tc.sm, tc.nsEnabled, tc.input)
 			assert.Equal(t, tc.wantClass, gotClass)
 			assert.Equal(t, tc.wantAlias, gotAlias)
 		})

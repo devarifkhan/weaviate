@@ -39,10 +39,7 @@ func (m *Manager) AddObject(ctx context.Context, principal *models.Principal, ob
 	repl *additional.ReplicationProperties,
 ) (*models.Object, error) {
 	className := schema.UppercaseClassName(object.Class)
-	className, _, err := namespacing.Resolve(principal, m.schemaManager, m.config.Config.Namespaces.Enabled, className)
-	if err != nil {
-		return nil, err
-	}
+	className, _ = namespacing.Resolve(principal, m.schemaManager, m.config.Config.Namespaces.Enabled, className)
 	object.Class = className
 
 	if err := m.authorizer.Authorize(ctx, principal, authorization.CREATE, authorization.ShardsData(className, object.Tenant)...); err != nil {
