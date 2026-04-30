@@ -21,7 +21,6 @@ import (
 	"github.com/google/uuid"
 	"github.com/pkg/errors"
 	"github.com/weaviate/weaviate/adapters/repos/db/helpers"
-	"github.com/weaviate/weaviate/adapters/repos/db/inverted/nested"
 	"github.com/weaviate/weaviate/entities/filters"
 	"github.com/weaviate/weaviate/entities/models"
 	"github.com/weaviate/weaviate/entities/schema"
@@ -249,7 +248,7 @@ func (a *Analyzer) analyzeArrayProp(prop *models.Property, values []any) (*Prope
 
 	items := make([]Countable, 0, len(values))
 	for _, value := range values {
-		analyzed, err := a.analyzeValue(scalarDT, "", "", nil, value)
+		analyzed, err := a.analyzeValue(scalarDT, prop.Tokenization, prop.Name, prop.TextAnalyzer, value)
 		if err != nil {
 			return nil, fmt.Errorf("analyze property %s: %w", prop.Name, err)
 		}
@@ -549,76 +548,6 @@ const (
 	HasSearchableIndexPropLength = false
 	HasRangeableIndexPropLength  = false
 )
-
-// analyzeNestedProp runs position assignment on a nested property value,
-// then analyzes each leaf value into bytes suitable for indexing.
-func (a *Analyzer) analyzeNestedProp(prop *models.Property, value any) (*NestedProperty, error) {
-	if value == nil {
-		return nil, nil
-	}
-
-	assignResult, err := nested.AssignPositions(prop, value)
-	if err != nil {
-		return nil, err
-	}
-
-	if len(assignResult.Values) == 0 && len(assignResult.Idx) == 0 && len(assignResult.Exists) == 0 {
-		return nil, nil
-	}
-
-	values := make([]NestedValue, 0, len(assignResult.Values))
-	for _, pv := range assignResult.Values {
-		analyzed, err := a.analyzeNestedValue(pv)
-		if err != nil {
-			return nil, fmt.Errorf("analyze value at %q: %w", pv.Path, err)
-		}
-		values = append(values, analyzed...)
-	}
-
-	idx := make([]NestedMeta, len(assignResult.Idx))
-	for i, entry := range assignResult.Idx {
-		idx[i] = NestedMeta{
-			Path:      entry.Path,
-			Index:     entry.Index,
-			Positions: entry.Positions,
-		}
-	}
-
-	exists := make([]NestedMeta, len(assignResult.Exists))
-	for i, entry := range assignResult.Exists {
-		exists[i] = NestedMeta{
-			Path:      entry.Path,
-			Index:     -1,
-			Positions: entry.Positions,
-		}
-	}
-
-	return &NestedProperty{
-		Name:   prop.Name,
-		Values: values,
-		Idx:    idx,
-		Exists: exists,
-	}, nil
-}
-
-// analyzeNestedValue converts a raw positioned value into one or more
-// NestedValue entries with analyzed byte representations. Text values
-// may produce multiple entries (one per token).
-func (a *Analyzer) analyzeNestedValue(pv nested.PositionedValue) ([]NestedValue, error) {
-	items, err := a.analyzeValue(pv.DataType, pv.Tokenization, "", nil, pv.Value)
-	if err != nil {
-		return nil, err
-	}
-	if items == nil {
-		return nil, nil
-	}
-
-	out := make([]NestedValue, len(items))
-	for i, item := range items {
-		out[i] = NestedValue{Path: pv.Path, Data: item.Data, Positions: pv.Positions}
-	}
-	return out, nil
-}
 
 func toInt64(v any) (int64, error) {
 	switch val := v.(type) {
