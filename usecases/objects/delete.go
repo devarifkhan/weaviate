@@ -26,7 +26,6 @@ import (
 	"github.com/weaviate/weaviate/usecases/auth/authorization"
 	authzerrs "github.com/weaviate/weaviate/usecases/auth/authorization/errors"
 	"github.com/weaviate/weaviate/usecases/memwatch"
-	"github.com/weaviate/weaviate/usecases/schema/namespacing"
 )
 
 // DeleteObject Class Instance from the connected DB
@@ -38,7 +37,7 @@ func (m *Manager) DeleteObject(ctx context.Context,
 	repl *additional.ReplicationProperties, tenant string,
 ) error {
 	className = schema.UppercaseClassName(className)
-	className, _ = namespacing.Resolve(principal, m.schemaManager, m.config.Config.Namespaces.Enabled, className)
+	className, _ = m.resolveNS(principal, className)
 
 	if err := m.authorizer.Authorize(ctx, principal, authorization.DELETE, authorization.Objects(className, tenant, id)); err != nil {
 		return err

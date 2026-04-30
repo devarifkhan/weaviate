@@ -25,7 +25,6 @@ import (
 	"github.com/weaviate/weaviate/entities/versioned"
 	"github.com/weaviate/weaviate/usecases/auth/authorization"
 	"github.com/weaviate/weaviate/usecases/memwatch"
-	"github.com/weaviate/weaviate/usecases/schema/namespacing"
 )
 
 // UpdateObject updates object of class.
@@ -36,7 +35,7 @@ func (m *Manager) UpdateObject(ctx context.Context, principal *models.Principal,
 	repl *additional.ReplicationProperties,
 ) (*models.Object, error) {
 	className := schema.UppercaseClassName(updates.Class)
-	className, _ = namespacing.Resolve(principal, m.schemaManager, m.config.Config.Namespaces.Enabled, className)
+	className, _ = m.resolveNS(principal, className)
 	updates.Class = className
 
 	if err := m.authorizer.Authorize(ctx, principal, authorization.UPDATE, authorization.Objects(updates.Class, updates.Tenant, updates.ID)); err != nil {

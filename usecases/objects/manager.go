@@ -36,6 +36,7 @@ import (
 	"github.com/weaviate/weaviate/usecases/config"
 	"github.com/weaviate/weaviate/usecases/memwatch"
 	"github.com/weaviate/weaviate/usecases/objects/alias"
+	"github.com/weaviate/weaviate/usecases/schema/namespacing"
 )
 
 type schemaManager interface {
@@ -193,6 +194,12 @@ func NewManager(schemaManager schemaManager,
 // is namespace-aware end to end.
 func (m *Manager) resolveAlias(class string) (className, aliasName string) {
 	return alias.ResolveAlias(m.schemaManager, class)
+}
+
+// resolveNS qualifies name with the principal's namespace (if enabled)
+// and resolves any alias to its underlying class.
+func (m *Manager) resolveNS(principal *models.Principal, name string) (class, originalAlias string) {
+	return namespacing.Resolve(principal, m.schemaManager, m.config.Config.Namespaces.Enabled, name)
 }
 
 func generateUUID() (strfmt.UUID, error) {

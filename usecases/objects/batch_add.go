@@ -27,7 +27,6 @@ import (
 	"github.com/weaviate/weaviate/entities/versioned"
 	"github.com/weaviate/weaviate/usecases/auth/authorization"
 	"github.com/weaviate/weaviate/usecases/objects/validation"
-	"github.com/weaviate/weaviate/usecases/schema/namespacing"
 )
 
 var errEmptyObjects = NewErrInvalidUserInput("invalid param 'objects': cannot be empty, need at least one object for batching")
@@ -41,7 +40,7 @@ func (b *BatchManager) AddObjects(ctx context.Context, principal *models.Princip
 	classesShards := make(map[string][]string)
 	for _, obj := range objects {
 		obj.Class = schema.UppercaseClassName(obj.Class)
-		cls, _ := namespacing.Resolve(principal, b.schemaManager, b.config.Config.Namespaces.Enabled, obj.Class)
+		cls, _ := b.resolveNS(principal, obj.Class)
 		obj.Class = cls
 		classesShards[obj.Class] = append(classesShards[obj.Class], obj.Tenant)
 	}

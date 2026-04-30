@@ -27,7 +27,6 @@ import (
 	"github.com/weaviate/weaviate/usecases/auth/authorization"
 	authzerrs "github.com/weaviate/weaviate/usecases/auth/authorization/errors"
 	"github.com/weaviate/weaviate/usecases/auth/authorization/filter"
-	"github.com/weaviate/weaviate/usecases/schema/namespacing"
 )
 
 // GetObject Class from the connected DB
@@ -36,7 +35,7 @@ func (m *Manager) GetObject(ctx context.Context, principal *models.Principal,
 	replProps *additional.ReplicationProperties, tenant string,
 ) (*models.Object, error) {
 	class = schema.UppercaseClassName(class)
-	class, _ = namespacing.Resolve(principal, m.schemaManager, m.config.Config.Namespaces.Enabled, class)
+	class, _ = m.resolveNS(principal, class)
 
 	if err := m.authorizer.Authorize(ctx, principal, authorization.READ, authorization.Objects(class, tenant, id)); err != nil {
 		return nil, err
